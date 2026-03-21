@@ -64,6 +64,15 @@ class Database:
         if 'custom_name' not in columns:
             cursor.execute("ALTER TABLE users ADD COLUMN custom_name TEXT")
             conn.commit()
+        if 'is_admin_verified' not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN is_admin_verified INTEGER DEFAULT 0")
+            conn.commit()
+        if 'is_sponsor' not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN is_sponsor INTEGER DEFAULT 0")
+            conn.commit()
+        if 'sponsor_name' not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN sponsor_name TEXT DEFAULT ''")
+            conn.commit()
 
     def create_tables(self):
         conn = self.get_connection()
@@ -81,7 +90,10 @@ class Database:
                 ban_reason TEXT,
                 registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_bonus TIMESTAMP,
-                total_lost INTEGER DEFAULT 0
+                total_lost INTEGER DEFAULT 0,
+                is_admin_verified INTEGER DEFAULT 0,
+                is_sponsor INTEGER DEFAULT 0,
+                sponsor_name TEXT DEFAULT ''
             )
         """)
         cursor.execute("""
@@ -312,10 +324,22 @@ def get_casino_menu():
 
 def get_business_menu():
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="20к (2.5к/день)", callback_data="buy_small"), InlineKeyboardButton(text="50к (5.5к/день)", callback_data="buy_medium"))
-    builder.row(InlineKeyboardButton(text="100к (10.5к/день)", callback_data="buy_large"), InlineKeyboardButton(text="💎 500₽ (50к/день)", callback_data="buy_paid"))
-    builder.row(InlineKeyboardButton(text="💰 Собрать", callback_data="collect_business"), InlineKeyboardButton(text="📊 Мой бизнес", callback_data="my_business"))
-    builder.row(InlineKeyboardButton(text="💵 Продать бизнес", callback_data="sell_business"), InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main"))
+    builder.row(
+        InlineKeyboardButton(text="🏪 Ларек у дома 24/7 (20к LC)", callback_data="buy_small"),
+        InlineKeyboardButton(text="🍺 Пивнуха (50к LC)", callback_data="buy_medium")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🏭 Завод по производству металла (100к LC)", callback_data="buy_large"),
+        InlineKeyboardButton(text="🏦 Банк (500₽)", callback_data="buy_paid")
+    )
+    builder.row(
+        InlineKeyboardButton(text="💰 Собрать", callback_data="collect_business"),
+        InlineKeyboardButton(text="📊 Мой бизнес", callback_data="my_business")
+    )
+    builder.row(
+        InlineKeyboardButton(text="💵 Продать бизнес", callback_data="sell_business"),
+        InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")
+    )
     return builder.as_markup()
 
 def get_top_menu():
@@ -409,6 +433,71 @@ TOTAL_PAGES = len(STATUS_PAGES)
 def is_private(message): return message.chat.type == ChatType.PRIVATE
 def is_admin(user_id): return user_id in ADMIN_IDS
 
+# ==================== СТАТУСЫ ИГРОКОВ (ТОПЫ) ====================
+def update_user_status(user_id: int):
+    """Обновление статусов пользователя (топы)"""
+    conn = db.get_connection()
+    
+    # Топ богачей
+    rich_top = conn.execute("""
+        SELECT user_id FROM users 
+        WHERE is_banned = 0 
+        ORDER BY balance_lc DESC 
+        LIMIT 1
+    """).fetchone()
+    rich_top = rich_top[0] if rich_top else None
+    
+    # Топы по играм
+    games = ['roulette', 'slots', 'dice', 'mines', 'lottery', 'blackjack']
+    tops = {'rich': rich_top}
+    
+    STATUS_ICONS = {
+        "roulette": "🃏",
+        "slots": "🎰",
+        "dice": "🎲",
+        "mines": "💣",
+        "lottery": "🎟️",
+        "blackjack": "🃏",
+        "rich": "💰"
+    }
+    
+    for game in games:
+        top = conn.execute("""
+            SELECT user_id FROM game_stats 
+            WHERE game_type = ?
+            GROUP BY user_id
+            ORDER BY SUM(win_amount) DESC 
+            LIMIT 1
+        """, (game,)).fetchone()
+        tops[game] = top[0] if top else None
+    
+    user_status = ""
+    if tops['rich'] == user_id:
+        user_status += STATUS_ICONS['rich']
+    
+    for game in games:
+        if tops.get(game) == user_id:
+            user_status += STATUS_ICONS[game]
+    
+    conn.execute("""
+        INSERT INTO user_status (user_id, status)
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET status = ?, updated_at = CURRENT_TIMESTAMP
+    """, (user_id, user_status, user_status))
+    conn.commit()
+    
+    return user_status
+
+def get_user_status(user_id: int) -> str:
+    """Получить статус пользователя (иконки за топы)"""
+    conn = db.get_connection()
+    cursor = conn.execute(
+        "SELECT status FROM user_status WHERE user_id = ?",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    return row[0] if row else ""
+
 # ==================== ИГРЫ (ЛОГИКА) ====================
 # Рулетка
 BLACK_NUMBERS = [2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35]
@@ -483,9 +572,6 @@ class MinesState(StatesGroup):
 
 class BlackjackState(StatesGroup):
     playing = State()
-
-class DuelState(StatesGroup):
-    waiting = State()
 
 # Хранилище активных дуэлей
 active_duels = {}
@@ -640,6 +726,15 @@ async def cmd_help(message: Message):
         f"👑 <b>Владелец:</b> {ADMIN_USERNAME}\n"
         f"📊 <b>Версия:</b> {BOT_VERSION}"
     )
+    # Добавляем админ-команды, если пользователь админ
+    if is_admin(message.from_user.id):
+        text += "\n\n👑 <b>Админ-команды:</b>\n"
+        text += "<code>/add_glc [id] [сумма]</code> — выдать GLC\n"
+        text += "<code>/verify_admin [id]</code> — выдать статус администратора\n"
+        text += "<code>/unverify_admin [id]</code> — снять статус администратора\n"
+        text += "<code>/verify_player [id] [название]</code> — выдать статус спонсора\n"
+        text += "<code>/unverify_player [id]</code> — снять статус спонсора\n"
+    
     await message.answer(text)
 
 # ==================== ОБРАБОТЧИКИ МЕНЮ ====================
@@ -686,7 +781,7 @@ async def donate_menu(callback: CallbackQuery):
         "• 400₽ — 50000 #LC\n• 500₽ — 60000 #LC\n• 600₽ — 70000 #LC\n"
         "• 700₽ — 80000 #LC\n• 800₽ — 90000 #LC\n• 900₽ — 100000 #LC\n"
         "• 1000₽ — 110000 #LC\n\n💎 <b>Специальное предложение:</b>\n"
-        f"• 500₽ — Богатый бизнес (50к #LC/день)\n\nДля оплаты напиши админу: {ADMIN_USERNAME}"
+        f"• 500₽ — Банк (50к #LC/день)\n\nДля оплаты напиши админу: {ADMIN_USERNAME}"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")]])
     await callback.message.edit_text(text, reply_markup=keyboard)
@@ -723,8 +818,10 @@ async def business_menu_callback(callback: CallbackQuery):
     biz = conn.execute("SELECT * FROM business WHERE user_id = ?", (callback.from_user.id,)).fetchone()
     text = "💼 <b>Бизнес система</b>\n\n"
     if biz:
-        names = {"small":"Малый бизнес","medium":"Средний бизнес","large":"Крупный бизнес","paid":"💎 Богатый бизнес"}
+        names = {"small":"🏪 Ларек у дома 24/7","medium":"🍺 Пивнуха","large":"🏭 Завод по производству металла","paid":"🏦 Банк"}
         prices = {"small":20000,"medium":50000,"large":100000,"paid":500}
+        daily = {"small":2500,"medium":5500,"large":10500,"paid":50000}
+        currency = {"small":"LC","medium":"LC","large":"LC","paid":"₽"}
         text += f"✅ У тебя есть: {names.get(biz[1])}\n"
         last = datetime.strptime(biz[2], '%Y-%m-%d %H:%M:%S')
         hours = (datetime.now() - last).total_seconds() / 3600
@@ -732,7 +829,7 @@ async def business_menu_callback(callback: CallbackQuery):
             text += "💰 Доступен сбор дохода!"
         else:
             text += f"⏳ Следующий сбор через: {24 - hours:.1f} ч."
-        text += f"\n\n💵 Можно продать за {prices.get(biz[1],0)//2} LC (50%)"
+        text += f"\n\n💵 Можно продать за {prices.get(biz[1],0)//2} {currency.get(biz[1], 'LC')} (50%)"
     else:
         text += "У тебя пока нет бизнеса.\nКупи один из вариантов ниже:"
     await callback.message.edit_text(text, reply_markup=get_business_menu())
@@ -748,8 +845,35 @@ async def my_stats_callback(callback: CallbackQuery):
     stats = conn.execute("SELECT game_type, COUNT(*) as total, SUM(CASE WHEN win THEN 1 ELSE 0 END) as wins FROM game_stats WHERE user_id = ? GROUP BY game_type", (callback.from_user.id,)).fetchall()
     stats_dict = {s[0]: {"wins": s[2], "losses": s[1]-s[2], "total": s[1]} for s in stats}
     def get_stat(game): s = stats_dict.get(game, {"wins":0,"losses":0,"total":0}); return f"{s['wins']}💰 / {s['losses']}💔 / {s['total']} ставок"
+    
+    # Получаем GLC статусы
+    glc_statuses = db.get_user_glc_statuses(callback.from_user.id)
+    glc_icon = glc_statuses[0]['status_icon'] if glc_statuses else ""
+    
+    # Получаем эксклюзивные статусы за топы
+    game_status = get_user_status(callback.from_user.id)
+    
+    # Получаем статусы верификации
+    admin_verified = user.get('is_admin_verified', 0)
+    is_sponsor = user.get('is_sponsor', 0)
+    sponsor_name = user.get('sponsor_name', '')
+    
+    # Формируем имя с GLC статусом
+    display_name = user.get('custom_name', user['username'])
+    if glc_icon:
+        display_name = f"{glc_icon} {display_name}"
+    
     text = (
-        f"👤 <b>Пользователь:</b> {user.get('custom_name', user['username'])} | ID: {callback.from_user.id}\n"
+        f"👤 <b>Пользователь:</b> {display_name} | ID: {callback.from_user.id}\n"
+    )
+    
+    # Отображаем эксклюзивные статусы за топы
+    if game_status:
+        text += f"🏆 <b>Статусы:</b> {game_status}\n\n"
+    else:
+        text += f"\n"
+    
+    text += (
         f"📈 <b>Общая статистика:</b>\n\n"
         f"🃏 Рулетка: {get_stat('roulette')}\n"
         f"🎰 Слоты: {get_stat('slots')}\n"
@@ -759,8 +883,14 @@ async def my_stats_callback(callback: CallbackQuery):
         f"🃏 Блэкджек: {get_stat('blackjack')}\n\n"
         f"🪙 Баланс LC: {user['balance_lc']}\n"
         f"💰 Баланс GLC: {user['balance_glc']}\n\n"
-        f"😭 Всего проиграно: {user['total_lost']} LC"
+        f"😭 Всего проиграно: {user['total_lost']} LC\n"
     )
+    
+    if admin_verified:
+        text += "\n✅ <b>Этот аккаунт верифицирован и является администратором бота.</b>\n"
+    if is_sponsor:
+        text += f"\n☑️ <b>Данный игрок является спонсором бота: {sponsor_name}</b>\n"
+    
     await callback.message.edit_text(text, reply_markup=get_back_button())
     await callback.answer()
 
@@ -1054,7 +1184,7 @@ async def donate_cmd(message: Message):
         "• 400₽ — 50000 #LC\n• 500₽ — 60000 #LC\n• 600₽ — 70000 #LC\n"
         "• 700₽ — 80000 #LC\n• 800₽ — 90000 #LC\n• 900₽ — 100000 #LC\n"
         "• 1000₽ — 110000 #LC\n\n💎 <b>Специальное предложение:</b>\n"
-        f"• 500₽ — Богатый бизнес (50к #LC/день)\n\nДля оплаты напиши админу: {ADMIN_USERNAME}"
+        f"• 500₽ — Банк (50к #LC/день)\n\nДля оплаты напиши админу: {ADMIN_USERNAME}"
     )
     await message.answer(text)
 
@@ -1064,7 +1194,29 @@ async def my_cmd(message: Message):
     if not user:
         await message.answer("❌ Ты не зарегистрирован! Напиши /start")
         return
-    await message.answer(f"🪙 Баланс LC: {user['balance_lc']}\n💰 Баланс GLC: {user['balance_glc']}")
+    
+    # Получаем эксклюзивные статусы за топы
+    game_status = get_user_status(message.from_user.id)
+    
+    # Получаем GLC статусы
+    glc_statuses = db.get_user_glc_statuses(message.from_user.id)
+    glc_icon = glc_statuses[0]['status_icon'] if glc_statuses else ""
+    
+    admin_verified = user.get('is_admin_verified', 0)
+    is_sponsor = user.get('is_sponsor', 0)
+    sponsor_name = user.get('sponsor_name', '')
+    
+    text = f"🪙 Баланс LC: {user['balance_lc']}\n💰 Баланс GLC: {user['balance_glc']}\n"
+    
+    if game_status:
+        text += f"\n🏆 <b>Твои статусы:</b> {game_status}\n"
+    
+    if admin_verified:
+        text += "\n✅ Вы верифицированный администратор!"
+    if is_sponsor:
+        text += f"\n☑️ Вы являетесь спонсором бота: {sponsor_name}"
+    
+    await message.answer(text)
 
 @router.message(Command("tb", "tr", "ts", "tk", "tm", "tl", "tbj"))
 async def top_cmd(message: Message):
@@ -1137,6 +1289,7 @@ async def roulette_game(message: Message):
         win_amount = bet * mult
         db.update_balance(message.from_user.id, win_amount)
         db.add_game_stat(message.from_user.id, "roulette", True, bet, win_amount)
+        update_user_status(message.from_user.id)
         await message.answer(
             f"🎉 <b>Ты выиграл в рулетке!</b>\n\n"
             f"Выпало число: {result} ({color})\n"
@@ -1147,6 +1300,7 @@ async def roulette_game(message: Message):
         )
     else:
         db.add_game_stat(message.from_user.id, "roulette", False, bet, 0)
+        update_user_status(message.from_user.id)
         await message.answer(
             f"💔 <b>Ты проиграл в рулетке</b>\n\n"
             f"Выпало число: {result} ({color})\n"
@@ -1179,7 +1333,6 @@ async def slots_game(message: Message):
         await message.answer("❌ Недостаточно средств!")
         return
     db.update_balance(message.from_user.id, -bet)
-    # Отправляем анимированный 🎰
     slot_msg = await message.answer_dice(emoji="🎰")
     await asyncio.sleep(3)
     value = slot_msg.dice.value
@@ -1207,6 +1360,7 @@ async def slots_game(message: Message):
         win_amount = bet * multiplier
         db.update_balance(message.from_user.id, win_amount)
         db.add_game_stat(message.from_user.id, "slots", True, bet, win_amount)
+        update_user_status(message.from_user.id)
         await message.answer(
             f"🎰 <b>СЛОТЫ - {win_name}!</b>\n\n"
             f"{combo}\n\n"
@@ -1217,6 +1371,7 @@ async def slots_game(message: Message):
         )
     else:
         db.add_game_stat(message.from_user.id, "slots", False, bet, 0)
+        update_user_status(message.from_user.id)
         await message.answer(
             f"🎰 <b>СЛОТЫ - {win_name}</b>\n\n"
             f"{combo}\n\n"
@@ -1318,6 +1473,8 @@ async def accept_duel(callback: CallbackQuery):
         db.update_balance(winner_id, win_amount)
         db.add_game_stat(winner_id, "dice", True, duel['bet'], win_amount)
         db.add_game_stat(opponent_id, "dice", False, duel['bet'], 0)
+        update_user_status(winner_id)
+        update_user_status(opponent_id)
         result_text = f"🏆 <b>ПОБЕДИТЕЛЬ: {winner_name}</b>"
     elif opponent_roll > creator_roll:
         winner_id = opponent_id
@@ -1326,6 +1483,8 @@ async def accept_duel(callback: CallbackQuery):
         db.update_balance(winner_id, win_amount)
         db.add_game_stat(winner_id, "dice", True, duel['bet'], win_amount)
         db.add_game_stat(duel['creator'], "dice", False, duel['bet'], 0)
+        update_user_status(winner_id)
+        update_user_status(duel['creator'])
         result_text = f"🏆 <b>ПОБЕДИТЕЛЬ: {winner_name}</b>"
     else:
         db.update_balance(duel['creator'], duel['bet'])
@@ -1434,6 +1593,7 @@ async def mine_action(callback: CallbackQuery, state: FSMContext):
         win_amount = int(bet * current_mult)
         db.update_balance(callback.from_user.id, win_amount)
         db.add_game_stat(callback.from_user.id, "mines", True, bet, win_amount)
+        update_user_status(callback.from_user.id)
         await callback.message.edit_text(f"💰 <b>Ты забрал выигрыш!</b>\n\nОткрыто: {len(opened)}\nМножитель: x{current_mult}\nВыигрыш: +{win_amount} LC")
         await state.clear()
         await callback.answer()
@@ -1443,6 +1603,7 @@ async def mine_action(callback: CallbackQuery, state: FSMContext):
         if not data.get('game_over', False) and data.get('opened'):
             bet = data.get('bet', 0)
             db.add_game_stat(callback.from_user.id, "mines", False, bet, 0)
+            update_user_status(callback.from_user.id)
         await callback.message.edit_text("👋 Игра завершена")
         await state.clear()
         await callback.answer()
@@ -1468,6 +1629,7 @@ async def mine_action(callback: CallbackQuery, state: FSMContext):
         await show_mines_field(callback.message, state, callback.from_user.id, edit=True)
         await callback.message.answer(f"💥 <b>БАХ! Ты подорвался!</b>\n\n💰 Потеряно: {bet} LC")
         db.add_game_stat(callback.from_user.id, "mines", False, bet, 0)
+        update_user_status(callback.from_user.id)
         await state.clear()
         await callback.answer()
         return
@@ -1513,6 +1675,7 @@ async def start_blackjack(message: Message, state: FSMContext):
         win_amount = int(bet * 2.5)
         db.update_balance(message.from_user.id, win_amount)
         db.add_game_stat(message.from_user.id, "blackjack", True, bet, win_amount)
+        update_user_status(message.from_user.id)
         await message.answer(
             f"🃏 <b>БЛЭКДЖЕК!</b>\n\n"
             f"Твои карты: {hand_to_string(player_hand)} (21)\n"
@@ -1548,6 +1711,7 @@ async def blackjack_action(callback: CallbackQuery, state: FSMContext):
         player_score = hand_score(player_hand)
         if player_score > 21:
             db.add_game_stat(user_id, "blackjack", False, bet, 0)
+            update_user_status(user_id)
             await callback.message.edit_text(
                 f"💔 <b>ПЕРЕБОР!</b>\n\n"
                 f"Твои карты: {hand_to_string(player_hand)} ({player_score})\n"
@@ -1580,18 +1744,22 @@ async def blackjack_action(callback: CallbackQuery, state: FSMContext):
             win_amount = bet * 2
             db.update_balance(user_id, win_amount)
             db.add_game_stat(user_id, "blackjack", True, bet, win_amount)
+            update_user_status(user_id)
             result = f"🎉 <b>Ты выиграл! Дилер перебрал</b>\n\n+{win_amount} LC"
         elif dealer_score > player_score:
             db.add_game_stat(user_id, "blackjack", False, bet, 0)
+            update_user_status(user_id)
             result = f"💔 <b>Дилер выиграл</b>\n\n💰 Потеряно: {bet} LC"
         elif dealer_score < player_score:
             win_amount = bet * 2
             db.update_balance(user_id, win_amount)
             db.add_game_stat(user_id, "blackjack", True, bet, win_amount)
+            update_user_status(user_id)
             result = f"🎉 <b>Ты выиграл!</b>\n\n+{win_amount} LC"
         else:
             db.update_balance(user_id, bet)
             db.add_game_stat(user_id, "blackjack", False, bet, 0)
+            update_user_status(user_id)
             result = f"🤝 <b>Ничья</b>\n\n💰 Ставка возвращена: {bet} LC"
         await callback.message.edit_text(
             f"🃏 <b>Блэкджек</b>\n\n"
@@ -1611,12 +1779,12 @@ async def buy_small(callback: CallbackQuery):
         return
     conn = db.get_connection()
     if conn.execute("SELECT * FROM business WHERE user_id = ?", (callback.from_user.id,)).fetchone():
-        await callback.answer("❌ Уже есть бизнес", show_alert=True)
+        await callback.answer("❌ У тебя уже есть бизнес! Сначала продай старый.", show_alert=True)
         return
     db.update_balance(callback.from_user.id, -20000)
     conn.execute("INSERT INTO business (user_id, business_type, last_collected) VALUES (?, 'small', datetime('now'))", (callback.from_user.id,))
     conn.commit()
-    await callback.answer("✅ Куплен Малый бизнес!", show_alert=True)
+    await callback.answer("✅ Ты купил Ларек у дома 24/7! Торгуй ночами!", show_alert=True)
     await business_menu_callback(callback)
 
 @router.callback_query(F.data == "buy_medium")
@@ -1627,12 +1795,12 @@ async def buy_medium(callback: CallbackQuery):
         return
     conn = db.get_connection()
     if conn.execute("SELECT * FROM business WHERE user_id = ?", (callback.from_user.id,)).fetchone():
-        await callback.answer("❌ Уже есть бизнес", show_alert=True)
+        await callback.answer("❌ У тебя уже есть бизнес! Сначала продай старый.", show_alert=True)
         return
     db.update_balance(callback.from_user.id, -50000)
     conn.execute("INSERT INTO business (user_id, business_type, last_collected) VALUES (?, 'medium', datetime('now'))", (callback.from_user.id,))
     conn.commit()
-    await callback.answer("✅ Куплен Средний бизнес!", show_alert=True)
+    await callback.answer("🍻 Ты купил Пивнуху! Наливай, народ потянулся!", show_alert=True)
     await business_menu_callback(callback)
 
 @router.callback_query(F.data == "buy_large")
@@ -1643,17 +1811,17 @@ async def buy_large(callback: CallbackQuery):
         return
     conn = db.get_connection()
     if conn.execute("SELECT * FROM business WHERE user_id = ?", (callback.from_user.id,)).fetchone():
-        await callback.answer("❌ Уже есть бизнес", show_alert=True)
+        await callback.answer("❌ У тебя уже есть бизнес! Сначала продай старый.", show_alert=True)
         return
     db.update_balance(callback.from_user.id, -100000)
     conn.execute("INSERT INTO business (user_id, business_type, last_collected) VALUES (?, 'large', datetime('now'))", (callback.from_user.id,))
     conn.commit()
-    await callback.answer("✅ Куплен Крупный бизнес!", show_alert=True)
+    await callback.answer("🏭 Ты купил Завод по производству металла! Сталь течет рекой!", show_alert=True)
     await business_menu_callback(callback)
 
 @router.callback_query(F.data == "buy_paid")
 async def buy_paid(callback: CallbackQuery):
-    await callback.answer("💎 Платный бизнес за 500₽ - используй /donate", show_alert=True)
+    await callback.answer("🏦 Банк за 500₽ - используй /donate", show_alert=True)
 
 @router.callback_query(F.data == "collect_business")
 async def collect_business_callback(callback: CallbackQuery):
@@ -1662,15 +1830,15 @@ async def collect_business_callback(callback: CallbackQuery):
     if not biz:
         await callback.answer("❌ Нет бизнеса", show_alert=True)
         return
-    prices = {"small":2500, "medium":5500, "large":10500, "paid":50000}
+    daily = {"small":2500, "medium":5500, "large":10500, "paid":50000}
     last = datetime.strptime(biz[2], '%Y-%m-%d %H:%M:%S')
     if (datetime.now() - last).total_seconds() < 86400:
         await callback.answer("⏳ Еще не прошло 24 часа", show_alert=True)
         return
     conn.execute("UPDATE business SET last_collected = datetime('now') WHERE user_id = ?", (callback.from_user.id,))
     conn.commit()
-    db.update_balance(callback.from_user.id, prices.get(biz[1],0))
-    await callback.answer("💰 Доход собран!", show_alert=True)
+    db.update_balance(callback.from_user.id, daily.get(biz[1],0))
+    await callback.answer(f"💰 Собрано: {daily.get(biz[1])} LC!", show_alert=True)
     await business_menu_callback(callback)
 
 @router.callback_query(F.data == "my_business")
@@ -1680,21 +1848,26 @@ async def my_business_callback(callback: CallbackQuery):
     if not biz:
         await callback.answer("❌ Нет бизнеса", show_alert=True)
         return
-    names = {"small":"Малый бизнес","medium":"Средний бизнес","large":"Крупный бизнес","paid":"💎 Богатый бизнес"}
+    names = {"small":"🏪 Ларек у дома 24/7","medium":"🍺 Пивнуха","large":"🏭 Завод по производству металла","paid":"🏦 Банк"}
     prices = {"small":20000,"medium":50000,"large":100000,"paid":500}
+    daily = {"small":2500,"medium":5500,"large":10500,"paid":50000}
+    currency = {"small":"LC","medium":"LC","large":"LC","paid":"₽"}
     last = datetime.strptime(biz[2], '%Y-%m-%d %H:%M:%S')
     hours = (datetime.now() - last).total_seconds() / 3600
+    sell_price = prices.get(biz[1],0) // 2
+    
     text = (
         f"💼 <b>Мой бизнес</b>\n\n"
         f"🏢 Тип: {names.get(biz[1])}\n"
-        f"💰 Инвестировано: {prices.get(biz[1])} LC\n"
-        f"📈 Доход в день: +{prices.get(biz[1])//20} LC\n"
-        f"💵 Можно продать за: {prices.get(biz[1])//2} LC\n\n"
+        f"💰 Инвестировано: {prices.get(biz[1])} {currency.get(biz[1])}\n"
+        f"📈 Доход в день: +{daily.get(biz[1])} LC\n"
+        f"💵 Можно продать за: {sell_price} {currency.get(biz[1])}\n\n"
         f"⏱ Последний сбор: {last.strftime('%Y-%m-%d %H:%M')}\n"
         f"⌛️ Прошло: {hours:.1f} ч.\n"
     )
     if hours >= 24:
         text += "\n✅ Можно собирать доход!"
+    
     await callback.message.edit_text(text, reply_markup=get_back_button())
     await callback.answer()
 
@@ -1706,11 +1879,20 @@ async def sell_business_callback(callback: CallbackQuery):
         await callback.answer("❌ Нет бизнеса", show_alert=True)
         return
     prices = {"small":20000,"medium":50000,"large":100000,"paid":500}
+    currency = {"small":"LC","medium":"LC","large":"LC","paid":"₽"}
     sell_price = prices.get(biz[1],0) // 2
+    currency_type = currency.get(biz[1], "LC")
+    
     conn.execute("DELETE FROM business WHERE user_id = ?", (callback.from_user.id,))
     conn.commit()
-    db.update_balance(callback.from_user.id, sell_price)
-    await callback.answer(f"✅ Продано за {sell_price} LC", show_alert=True)
+    
+    if biz[1] == "paid":
+        db.update_balance(callback.from_user.id, sell_price * 200)
+        await callback.answer(f"✅ Продано за {sell_price * 200} LC", show_alert=True)
+    else:
+        db.update_balance(callback.from_user.id, sell_price)
+        await callback.answer(f"✅ Продано за {sell_price} LC", show_alert=True)
+    
     await business_menu_callback(callback)
 
 # ==================== АДМИН-КОМАНДЫ ====================
@@ -1807,6 +1989,131 @@ async def cmd_promolist(message: Message):
         text += f"• <code>{p[0]}</code>: {p[1]} LC | {p[3]}/{p[2]}\n"
     await message.answer(text)
 
+@router.message(Command("add_glc"))
+async def cmd_add_glc(message: Message):
+    """Выдать GLC пользователю"""
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Ты не админ!")
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("❌ Использование: /add_glc user_id сумма")
+        return
+    try:
+        user_id = int(args[1])
+        amount = int(args[2])
+    except:
+        await message.answer("❌ Неверные числа")
+        return
+    new_balance = db.update_glc(user_id, amount)
+    db.log_action(user_id, "admin_glc", f"админ выдал {amount} GLC")
+    await message.answer(f"✅ Пользователю {user_id} выдано {amount} GLC. Текущий баланс: {new_balance}")
+    try:
+        await message.bot.send_message(user_id, f"💰 <b>Вам начислено {amount} GLC</b> от администратора!")
+    except:
+        pass
+
+@router.message(Command("verify_admin"))
+async def cmd_verify_admin(message: Message):
+    """Выдать верификацию администратора"""
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Ты не админ!")
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("❌ Использование: /verify_admin user_id")
+        return
+    try:
+        user_id = int(args[1])
+    except:
+        await message.answer("❌ Неверный ID")
+        return
+    user = db.get_user(user_id)
+    if not user:
+        await message.answer("❌ Пользователь не найден")
+        return
+    conn = db.get_connection()
+    conn.execute("UPDATE users SET is_admin_verified = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    db.log_action(user_id, "admin_verify", f"админ выдал верификацию")
+    await message.answer(f"✅ Пользователь {user_id} теперь верифицирован как администратор!")
+    try:
+        await message.bot.send_message(user_id, f"👑 <b>Поздравляем! Вы получили статус администратора бота!</b>\n\nТеперь вы отображаетесь как верифицированный администратор.")
+    except:
+        pass
+
+@router.message(Command("unverify_admin"))
+async def cmd_unverify_admin(message: Message):
+    """Снять верификацию администратора"""
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Ты не админ!")
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("❌ Использование: /unverify_admin user_id")
+        return
+    try:
+        user_id = int(args[1])
+    except:
+        await message.answer("❌ Неверный ID")
+        return
+    conn = db.get_connection()
+    conn.execute("UPDATE users SET is_admin_verified = 0 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    db.log_action(user_id, "admin_unverify", f"админ снял верификацию")
+    await message.answer(f"✅ У пользователя {user_id} снята верификация администратора")
+
+@router.message(Command("verify_player"))
+async def cmd_verify_player(message: Message):
+    """Выдать статус спонсора игроку"""
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Ты не админ!")
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("❌ Использование: /verify_player user_id название_спонсора")
+        return
+    try:
+        user_id = int(args[1])
+        sponsor_name = ' '.join(args[2:])
+    except:
+        await message.answer("❌ Неверный формат")
+        return
+    user = db.get_user(user_id)
+    if not user:
+        await message.answer("❌ Пользователь не найден")
+        return
+    conn = db.get_connection()
+    conn.execute("UPDATE users SET is_sponsor = 1, sponsor_name = ? WHERE user_id = ?", (sponsor_name, user_id))
+    conn.commit()
+    db.log_action(user_id, "sponsor_verify", f"админ выдал статус спонсора: {sponsor_name}")
+    await message.answer(f"✅ Пользователь {user_id} теперь является спонсором бота: {sponsor_name}")
+    try:
+        await message.bot.send_message(user_id, f"🎖️ <b>Поздравляем! Вы получили статус спонсора бота: {sponsor_name}</b>\n\nСпасибо за поддержку проекта!")
+    except:
+        pass
+
+@router.message(Command("unverify_player"))
+async def cmd_unverify_player(message: Message):
+    """Снять статус спонсора"""
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Ты не админ!")
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("❌ Использование: /unverify_player user_id")
+        return
+    try:
+        user_id = int(args[1])
+    except:
+        await message.answer("❌ Неверный ID")
+        return
+    conn = db.get_connection()
+    conn.execute("UPDATE users SET is_sponsor = 0, sponsor_name = '' WHERE user_id = ?", (user_id,))
+    conn.commit()
+    db.log_action(user_id, "sponsor_unverify", f"админ снял статус спонсора")
+    await message.answer(f"✅ У пользователя {user_id} снят статус спонсора")
+
 @router.message(Command("donate_confirm"))
 async def cmd_donate_confirm(message: Message):
     if not is_admin(message.from_user.id):
@@ -1832,7 +2139,12 @@ async def cmd_donate_confirm(message: Message):
         conn.commit()
         await message.answer(f"✅ Бизнес выдан пользователю {user_id}")
         try:
-            await message.bot.send_message(user_id, "💎 <b>Тебе выдан Богатый бизнес!</b>\n\nТы будешь получать по 50к #LC каждый день!")
+            await message.bot.send_message(
+                user_id,
+                "🏦 <b>Тебе выдан Банк!</b>\n\n"
+                "Ты будешь получать по 50к #LC каждый день!\n"
+                "Забирай доход в разделе 💼 Бизнес → 💰 Собрать"
+            )
         except:
             pass
     else:
@@ -1864,6 +2176,7 @@ async def draw_lottery(bot):
     for w in winners:
         db.update_balance(w['user_id'], w['prize'])
         db.add_game_stat(w['user_id'], "lottery", True, 0, w['prize'])
+        update_user_status(w['user_id'])
     results = f"🥇 {winners[0]['user_id']} — {winners[0]['prize']} LC\n🥈 {winners[1]['user_id']} — {winners[1]['prize']} LC\n🥉 {winners[2]['user_id']} — {winners[2]['prize']} LC"
     await bot.send_message(CHANNEL_ID, f"🎟 РЕЗУЛЬТАТЫ ЛОТЕРЕИ\n\n{results}")
     conn.execute("DELETE FROM lottery_tickets WHERE week_number = ?", (week,))
