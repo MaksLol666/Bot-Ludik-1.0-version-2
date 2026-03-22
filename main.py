@@ -73,6 +73,9 @@ class Database:
         if 'sponsor_name' not in columns:
             cursor.execute("ALTER TABLE users ADD COLUMN sponsor_name TEXT DEFAULT ''")
             conn.commit()
+        if 'active_glc_status' not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN active_glc_status TEXT DEFAULT ''")
+            conn.commit()
 
     def create_tables(self):
         conn = self.get_connection()
@@ -93,7 +96,8 @@ class Database:
                 total_lost INTEGER DEFAULT 0,
                 is_admin_verified INTEGER DEFAULT 0,
                 is_sponsor INTEGER DEFAULT 0,
-                sponsor_name TEXT DEFAULT ''
+                sponsor_name TEXT DEFAULT '',
+                active_glc_status TEXT DEFAULT ''
             )
         """)
         cursor.execute("""
@@ -317,9 +321,19 @@ def get_main_menu():
 
 def get_casino_menu():
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🃏 Рулетка", callback_data="game_roulette"), InlineKeyboardButton(text="🎰 Слоты", callback_data="game_slots"))
-    builder.row(InlineKeyboardButton(text="🎲 Кости", callback_data="game_dice"), InlineKeyboardButton(text="💣 Мины", callback_data="game_mines"))
-    builder.row(InlineKeyboardButton(text="🃏 Блэкджек", callback_data="game_blackjack"), InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main"))
+    builder.row(
+        InlineKeyboardButton(text="🃏 Рулетка", callback_data="game_roulette"),
+        InlineKeyboardButton(text="🎰 Слоты", callback_data="game_slots")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🎲 Кости", callback_data="game_dice"),
+        InlineKeyboardButton(text="💣 Мины", callback_data="game_mines")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🃏 Блэкджек", callback_data="game_blackjack"),
+        InlineKeyboardButton(text="💎 Under 7 Over", callback_data="game_under7over")
+    )
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main"))
     return builder.as_markup()
 
 def get_business_menu():
@@ -347,7 +361,8 @@ def get_top_menu():
     builder.row(InlineKeyboardButton(text="💰 Богачи", callback_data="top_balance"), InlineKeyboardButton(text="🃏 Рулетка", callback_data="top_roulette"))
     builder.row(InlineKeyboardButton(text="🎰 Слоты", callback_data="top_slots"), InlineKeyboardButton(text="🎲 Кости", callback_data="top_dice"))
     builder.row(InlineKeyboardButton(text="💣 Мины", callback_data="top_mines"), InlineKeyboardButton(text="🎟 Лотерея", callback_data="top_lottery"))
-    builder.row(InlineKeyboardButton(text="🃏 Блэкджек", callback_data="top_blackjack"), InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main"))
+    builder.row(InlineKeyboardButton(text="🃏 Блэкджек", callback_data="top_blackjack"), InlineKeyboardButton(text="💎 Under 7 Over", callback_data="top_under7over"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main"))
     return builder.as_markup()
 
 def get_back_button():
@@ -357,7 +372,13 @@ def get_back_button():
 
 def get_glc_menu():
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="💰 Баланс GLC", callback_data="glc_balance"), InlineKeyboardButton(text="🛒 Магазин статусов", callback_data="glc_shop"))
+    builder.row(
+        InlineKeyboardButton(text="💰 Баланс GLC", callback_data="glc_balance"),
+        InlineKeyboardButton(text="🛒 Магазин статусов", callback_data="glc_shop")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🎒 Инвентарь статусов", callback_data="glc_inventory")
+    )
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main"))
     return builder.as_markup()
 
@@ -374,6 +395,56 @@ def get_glc_shop_page(page, total_pages, statuses, owned_keys):
     if page < total_pages: nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"shop_page_{page+1}"))
     builder.row(*nav_row)
     builder.row(InlineKeyboardButton(text="◀️ Назад в GLC", callback_data="glc_menu"))
+    return builder.as_markup()
+
+def get_glc_inventory_page(statuses, active_icon, page, total_pages):
+    builder = InlineKeyboardBuilder()
+    for i, status in enumerate(statuses):
+        is_active = status['status_icon'] == active_icon
+        if is_active:
+            builder.row(InlineKeyboardButton(text=f"⭐ {status['status_icon']} {status['status_name']} (Активен)", callback_data="noop"))
+        else:
+            builder.row(InlineKeyboardButton(text=f"⬜ {status['status_icon']} {status['status_name']}", callback_data=f"activate_status_{status['status_key']}"))
+    
+    nav_row = []
+    if page > 1: nav_row.append(InlineKeyboardButton(text="◀️", callback_data=f"inv_page_{page-1}"))
+    nav_row.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"))
+    if page < total_pages: nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"inv_page_{page+1}"))
+    builder.row(*nav_row)
+    builder.row(InlineKeyboardButton(text="◀️ Назад в GLC", callback_data="glc_menu"))
+    return builder.as_markup()
+
+def get_admin_menu():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users"),
+        InlineKeyboardButton(text="💰 Выдать LC", callback_data="admin_give_lc")
+    )
+    builder.row(
+        InlineKeyboardButton(text="💎 Выдать GLC", callback_data="admin_give_glc"),
+        InlineKeyboardButton(text="🎟 Создать промокод", callback_data="admin_create_promo")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🚫 Бан/Разбан", callback_data="admin_ban_menu"),
+        InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📋 Логи игрока", callback_data="admin_logs_menu"),
+        InlineKeyboardButton(text="🏦 Бизнес", callback_data="admin_business")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_mailing"),
+        InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")
+    )
+    return builder.as_markup()
+
+def get_admin_ban_menu():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🔨 Забанить", callback_data="admin_ban"),
+        InlineKeyboardButton(text="🔓 Разбанить", callback_data="admin_unban")
+    )
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin_panel"))
     return builder.as_markup()
 
 # ==================== GLC СТАТУСЫ ====================
@@ -448,7 +519,7 @@ def update_user_status(user_id: int):
     rich_top = rich_top[0] if rich_top else None
     
     # Топы по играм
-    games = ['roulette', 'slots', 'dice', 'mines', 'lottery', 'blackjack']
+    games = ['roulette', 'slots', 'dice', 'mines', 'lottery', 'blackjack', 'under7over']
     tops = {'rich': rich_top}
     
     STATUS_ICONS = {
@@ -458,6 +529,7 @@ def update_user_status(user_id: int):
         "mines": "💣",
         "lottery": "🎟️",
         "blackjack": "🃏",
+        "under7over": "💎",
         "rich": "💰"
     }
     
@@ -497,6 +569,24 @@ def get_user_status(user_id: int) -> str:
     )
     row = cursor.fetchone()
     return row[0] if row else ""
+
+def get_display_name_with_status(user_id: int, username: str) -> str:
+    """Получить имя со статусом для отображения в топах"""
+    user = db.get_user(user_id)
+    active_glc = user.get('active_glc_status', '') if user else ''
+    game_status = get_user_status(user_id)
+    
+    if active_glc and game_status:
+        combined = active_glc + game_status
+        if len(combined) > 7:
+            combined = combined[:7]
+        return f"{combined} {username}"
+    elif active_glc:
+        return f"{active_glc} {username}"
+    elif game_status:
+        return f"{game_status} {username}"
+    else:
+        return username
 
 # ==================== ИГРЫ (ЛОГИКА) ====================
 # Рулетка
@@ -566,12 +656,37 @@ def hand_score(hand):
 def hand_to_string(hand):
     return ' '.join(hand)
 
+# Under 7 Over
+def play_under7over(bet_type):
+    dice1 = random.randint(1, 6)
+    dice2 = random.randint(1, 6)
+    total = dice1 + dice2
+    
+    if bet_type == "under":
+        win = total < 7
+        multiplier = 2
+    elif bet_type == "over":
+        win = total > 7
+        multiplier = 2
+    else:  # seven
+        win = total == 7
+        multiplier = 4
+    
+    return win, multiplier, dice1, dice2, total
+
 # ==================== СОСТОЯНИЯ ДЛЯ ИГР ====================
 class MinesState(StatesGroup):
     playing = State()
 
 class BlackjackState(StatesGroup):
     playing = State()
+
+class Under7OverState(StatesGroup):
+    waiting = State()
+
+# Состояние для рассылки
+class MailingState(StatesGroup):
+    waiting_for_text = State()
 
 # Хранилище активных дуэлей
 active_duels = {}
@@ -688,6 +803,12 @@ async def cmd_help(message: Message):
         "Пример: <code>бджек 1000</code>\n"
         "Правила: набери 21 или ближе к дилеру. Туз = 11 или 1, J/Q/K = 10\n\n"
         
+        "💎 <b>Under 7 Over (Premium)</b>\n"
+        "Команда: <code>u7o [под/над/ровно] [ставка]</code>\n"
+        "Пример: <code>u7o под 1000</code>\n"
+        "Правила: угадай сумму двух костей. Под (меньше 7) - x2, Над (больше 7) - x2, Ровно 7 - x4\n"
+        "⚠️ Игра только за GLC! Минимальная ставка: 1000 GLC\n\n"
+        
         "🎟 <b>Лотерея</b>\n"
         "Команды: <code>/купить [кол-во]</code>, <code>/моибилеты</code>\n"
         "Пример: <code>/купить 5</code>\n"
@@ -715,7 +836,7 @@ async def cmd_help(message: Message):
         "Правила: раз в 5 часов можно получить от 1000 до 10000 LC\n\n"
         
         "🏆 <b>Топы</b>\n"
-        "Команды: /tb (богачи), /tr (рулетка), /ts (слоты), /tk (кости), /tm (мины), /tl (лотерея), /tbj (блэкджек)\n\n"
+        "Команды: /tb (богачи), /tr (рулетка), /ts (слоты), /tk (кости), /tm (мины), /tl (лотерея), /tbj (блэкджек), /tu7o (Under 7 Over)\n\n"
         
         "ℹ️ <b>Другое</b>\n"
         "<code>/my</code> — моя статистика\n"
@@ -726,16 +847,407 @@ async def cmd_help(message: Message):
         f"👑 <b>Владелец:</b> {ADMIN_USERNAME}\n"
         f"📊 <b>Версия:</b> {BOT_VERSION}"
     )
-    # Добавляем админ-команды, если пользователь админ
-    if is_admin(message.from_user.id):
-        text += "\n\n👑 <b>Админ-команды:</b>\n"
-        text += "<code>/add_glc [id] [сумма]</code> — выдать GLC\n"
-        text += "<code>/verify_admin [id]</code> — выдать статус администратора\n"
-        text += "<code>/unverify_admin [id]</code> — снять статус администратора\n"
-        text += "<code>/verify_player [id] [название]</code> — выдать статус спонсора\n"
-        text += "<code>/unverify_player [id]</code> — снять статус спонсора\n"
+    await message.answer(text)
+
+# ==================== АДМИН-ПАНЕЛЬ ====================
+@router.message(Command("admin_panel"))
+async def admin_panel(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ У вас нет доступа к админ-панели!")
+        return
+    
+    text = "👑 <b>Админ-панель Лудик</b>\n\nВыберите действие:"
+    await message.answer(text, reply_markup=get_admin_menu())
+
+@router.callback_query(F.data == "admin_panel")
+async def admin_panel_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ У вас нет доступа!", show_alert=True)
+        return
+    
+    text = "👑 <b>Админ-панель Лудик</b>\n\nВыберите действие:"
+    await callback.message.edit_text(text, reply_markup=get_admin_menu())
+    await callback.answer()
+
+# Пользователи
+@router.callback_query(F.data == "admin_users")
+async def admin_users(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    conn = db.get_connection()
+    total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    banned_users = conn.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1").fetchone()[0]
+    
+    text = (
+        f"👥 <b>Статистика пользователей</b>\n\n"
+        f"📊 Всего игроков: {total_users}\n"
+        f"🚫 Забанено: {banned_users}\n"
+        f"✅ Активных: {total_users - banned_users}\n\n"
+        f"Для управления введите ID пользователя:"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_back_button())
+    await callback.answer()
+
+# Выдать LC
+@router.callback_query(F.data == "admin_give_lc")
+async def admin_give_lc(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "💰 <b>Выдача LC</b>\n\n"
+        "Введите команду:\n"
+        "<code>/money [user_id] [сумма]</code>\n\n"
+        "Пример: <code>/money 123456789 10000</code>",
+        reply_markup=get_back_button()
+    )
+    await callback.answer()
+
+# Выдать GLC
+@router.callback_query(F.data == "admin_give_glc")
+async def admin_give_glc(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "💎 <b>Выдача GLC</b>\n\n"
+        "Введите команду:\n"
+        "<code>/add_glc [user_id] [сумма]</code>\n\n"
+        "Пример: <code>/add_glc 123456789 500</code>",
+        reply_markup=get_back_button()
+    )
+    await callback.answer()
+
+# Создать промокод
+@router.callback_query(F.data == "admin_create_promo")
+async def admin_create_promo(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "🎟 <b>Создание промокода</b>\n\n"
+        "Введите команду:\n"
+        "<code>/add_promo [код] [сумма] [лимит]</code>\n\n"
+        "Пример: <code>/add_promo BONUS 5000 10</code>",
+        reply_markup=get_back_button()
+    )
+    await callback.answer()
+
+# Бан меню
+@router.callback_query(F.data == "admin_ban_menu")
+async def admin_ban_menu(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "🚫 <b>Управление банами</b>\n\n"
+        "Выберите действие:",
+        reply_markup=get_admin_ban_menu()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_ban")
+async def admin_ban(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "🔨 <b>Забанить пользователя</b>\n\n"
+        "Введите команду:\n"
+        "<code>/ban [user_id] [причина]</code>\n\n"
+        "Пример: <code>/ban 123456789 Спам</code>",
+        reply_markup=get_back_button()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_unban")
+async def admin_unban(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "🔓 <b>Разбанить пользователя</b>\n\n"
+        "Введите команду:\n"
+        "<code>/unban [user_id]</code>\n\n"
+        "Пример: <code>/unban 123456789</code>",
+        reply_markup=get_back_button()
+    )
+    await callback.answer()
+
+# Статистика
+@router.callback_query(F.data == "admin_stats")
+async def admin_stats(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    conn = db.get_connection()
+    total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    banned_users = conn.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1").fetchone()[0]
+    
+    games = ['roulette', 'slots', 'dice', 'mines', 'lottery', 'blackjack', 'under7over']
+    game_stats = {}
+    for game in games:
+        total_bets = conn.execute("SELECT COUNT(*) FROM game_stats WHERE game_type = ?", (game,)).fetchone()[0]
+        total_wins = conn.execute("SELECT COUNT(*) FROM game_stats WHERE game_type = ? AND win = 1", (game,)).fetchone()[0]
+        game_stats[game] = {"total": total_bets, "wins": total_wins}
+    
+    text = (
+        f"📊 <b>Статистика бота</b>\n\n"
+        f"👥 <b>Пользователи:</b>\n"
+        f"• Всего: {total_users}\n"
+        f"• Забанено: {banned_users}\n"
+        f"• Активных: {total_users - banned_users}\n\n"
+        f"🎮 <b>Игры:</b>\n"
+        f"• Рулетка: {game_stats['roulette']['total']} игр, {game_stats['roulette']['wins']} побед\n"
+        f"• Слоты: {game_stats['slots']['total']} игр, {game_stats['slots']['wins']} побед\n"
+        f"• Кости: {game_stats['dice']['total']} игр, {game_stats['dice']['wins']} побед\n"
+        f"• Мины: {game_stats['mines']['total']} игр, {game_stats['mines']['wins']} побед\n"
+        f"• Лотерея: {game_stats['lottery']['total']} игр, {game_stats['lottery']['wins']} побед\n"
+        f"• Блэкджек: {game_stats['blackjack']['total']} игр, {game_stats['blackjack']['wins']} побед\n"
+        f"• Under 7 Over: {game_stats['under7over']['total']} игр, {game_stats['under7over']['wins']} побед"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=get_back_button())
+    await callback.answer()
+
+# Логи игрока
+@router.callback_query(F.data == "admin_logs_menu")
+async def admin_logs_menu(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "📋 <b>Логи игрока</b>\n\n"
+        "Введите команду:\n"
+        "<code>/logs [user_id]</code>\n\n"
+        "Пример: <code>/logs 123456789</code>",
+        reply_markup=get_back_button()
+    )
+    await callback.answer()
+
+@router.message(Command("logs"))
+async def cmd_logs(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Доступ запрещен!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("❌ Использование: /logs [user_id]")
+        return
+    
+    try:
+        user_id = int(args[1])
+    except:
+        await message.answer("❌ Неверный ID")
+        return
+    
+    user = db.get_user(user_id)
+    if not user:
+        await message.answer("❌ Пользователь не найден")
+        return
+    
+    conn = db.get_connection()
+    logs = conn.execute("""
+        SELECT action, details, created_at FROM user_logs 
+        WHERE user_id = ? 
+        ORDER BY created_at DESC 
+        LIMIT 20
+    """, (user_id,)).fetchall()
+    
+    if not logs:
+        await message.answer(f"📋 <b>Логи пользователя {user_id}</b>\n\nНет действий")
+        return
+    
+    text = f"📋 <b>Логи пользователя {user.get('custom_name', user['username'])}</b>\n\n"
+    for log in logs:
+        text += f"• {log[2][:16]} | {log[0]} | {log[1]}\n"
     
     await message.answer(text)
+
+# Бизнес админ
+@router.callback_query(F.data == "admin_business")
+async def admin_business(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "🏦 <b>Управление бизнесом</b>\n\n"
+        "Команды:\n"
+        "<code>/remove_business [user_id]</code> — удалить бизнес\n"
+        "<code>/check_business [user_id]</code> — проверить бизнес",
+        reply_markup=get_back_button()
+    )
+    await callback.answer()
+
+@router.message(Command("remove_business"))
+async def cmd_remove_business(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Доступ запрещен!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("❌ Использование: /remove_business [user_id]")
+        return
+    
+    try:
+        user_id = int(args[1])
+    except:
+        await message.answer("❌ Неверный ID")
+        return
+    
+    conn = db.get_connection()
+    biz = conn.execute("SELECT * FROM business WHERE user_id = ?", (user_id,)).fetchone()
+    if not biz:
+        await message.answer(f"❌ У пользователя {user_id} нет бизнеса")
+        return
+    
+    conn.execute("DELETE FROM business WHERE user_id = ?", (user_id,))
+    conn.commit()
+    
+    await message.answer(f"✅ Бизнес пользователя {user_id} удален")
+
+@router.message(Command("check_business"))
+async def cmd_check_business(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Доступ запрещен!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("❌ Использование: /check_business [user_id]")
+        return
+    
+    try:
+        user_id = int(args[1])
+    except:
+        await message.answer("❌ Неверный ID")
+        return
+    
+    conn = db.get_connection()
+    biz = conn.execute("SELECT * FROM business WHERE user_id = ?", (user_id,)).fetchone()
+    if not biz:
+        await message.answer(f"❌ У пользователя {user_id} нет бизнеса")
+        return
+    
+    names = {"small":"🏪 Ларек у дома 24/7","medium":"🍺 Пивнуха","large":"🏭 Завод по производству металла","paid":"🏦 Банк"}
+    last = datetime.strptime(biz[2], '%Y-%m-%d %H:%M:%S')
+    hours = (datetime.now() - last).total_seconds() / 3600
+    
+    text = (
+        f"🏢 <b>Бизнес пользователя {user_id}</b>\n\n"
+        f"Тип: {names.get(biz[1])}\n"
+        f"Последний сбор: {last.strftime('%Y-%m-%d %H:%M')}\n"
+        f"Прошло: {hours:.1f} ч."
+    )
+    
+    await message.answer(text)
+
+# ==================== РАССЫЛКА ====================
+@router.callback_query(F.data == "admin_mailing")
+async def admin_mailing(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    await state.set_state(MailingState.waiting_for_text)
+    await callback.message.edit_text(
+        "📢 <b>Рассылка сообщения</b>\n\n"
+        "Введите текст сообщения для рассылки.\n"
+        "Сообщение будет отправлено ВСЕМ пользователям бота.\n\n"
+        "✏️ <b>Введите текст:</b>\n\n"
+        "Для отмены введите 'отмена'",
+        reply_markup=get_back_button()
+    )
+    await callback.answer()
+
+@router.message(MailingState.waiting_for_text)
+async def process_mailing(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Доступ запрещен!")
+        await state.clear()
+        return
+    
+    if message.text.lower() == "отмена":
+        await message.answer("❌ Рассылка отменена")
+        await state.clear()
+        await message.answer("🎮 Главное меню:", reply_markup=get_main_menu())
+        return
+    
+    mailing_text = message.text
+    
+    conn = db.get_connection()
+    users = conn.execute("SELECT user_id FROM users").fetchall()
+    
+    if not users:
+        await message.answer("❌ Нет пользователей для рассылки")
+        await state.clear()
+        return
+    
+    await state.update_data(mailing_text=mailing_text, users=users)
+    
+    await message.answer(
+        f"📢 <b>Подтверждение рассылки</b>\n\n"
+        f"Текст сообщения:\n"
+        f"<code>{mailing_text[:200]}{'...' if len(mailing_text) > 200 else ''}</code>\n\n"
+        f"👥 Будет отправлено: {len(users)} пользователям\n\n"
+        f"✅ Напишите <b>да</b> для подтверждения\n"
+        f"❌ Напишите <b>отмена</b> для отмены"
+    )
+
+@router.message(MailingState.waiting_for_text, F.text.lower() == "да")
+async def confirm_mailing(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Доступ запрещен!")
+        await state.clear()
+        return
+    
+    data = await state.get_data()
+    mailing_text = data.get('mailing_text')
+    users = data.get('users')
+    
+    if not mailing_text or not users:
+        await message.answer("❌ Ошибка: нет данных для рассылки")
+        await state.clear()
+        return
+    
+    await message.answer(f"📢 <b>Начинаю рассылку...</b>\n\n⏳ Отправка сообщений {len(users)} пользователям...")
+    
+    success_count = 0
+    fail_count = 0
+    
+    for user in users:
+        try:
+            await message.bot.send_message(user[0], mailing_text)
+            success_count += 1
+            await asyncio.sleep(0.05)
+        except:
+            fail_count += 1
+    
+    await message.answer(
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"📨 Успешно отправлено: {success_count}\n"
+        f"❌ Не доставлено: {fail_count}\n"
+        f"👥 Всего пользователей: {len(users)}"
+    )
+    
+    db.log_action(message.from_user.id, "admin_mailing", f"отправил рассылку {success_count}/{len(users)} пользователям")
+    
+    await state.clear()
+    await message.answer("🎮 Главное меню:", reply_markup=get_main_menu())
 
 # ==================== ОБРАБОТЧИКИ МЕНЮ ====================
 @router.callback_query(F.data == "back_to_main")
@@ -748,6 +1260,94 @@ async def casino_menu(callback: CallbackQuery):
     await callback.message.edit_text("🎰 <b>Казино Лудик</b>\n\nВыбери игру:", reply_markup=get_casino_menu())
     await callback.answer()
 
+# ==================== КНОПКИ ИГР ====================
+@router.callback_query(F.data == "game_roulette")
+async def game_roulette_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "🃏 <b>Рулетка</b>\n\n"
+        "Команда: <code>рул [цвет/число] [ставка]</code>\n"
+        "Пример: <code>рул красное 1000</code>\n\n"
+        "Доступные ставки:\n"
+        "• красное/черное (x2)\n"
+        "• число 0-36 (x36)\n"
+        "• ряд1/ряд2/ряд3 (x3)\n"
+        "• 1-12/13-24/25-36 (x3)\n"
+        "• 1-18/19-36 (x2)\n"
+        "• чёт/нечёт (x2)\n"
+        "• столбец1-12 (x12)"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "game_slots")
+async def game_slots_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "🎰 <b>Слоты</b>\n\n"
+        "Команда: <code>слоты [ставка]</code>\n"
+        "Пример: <code>слоты 1000</code>\n\n"
+        "Выигрышные комбинации:\n"
+        "• 7️⃣7️⃣7️⃣ — x10 (ДЖЕКПОТ)\n"
+        "• 💎💎💎 — x5\n"
+        "• 🍋🍋🍋 — x3\n"
+        "• 🍒🍒🍒 — x3"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "game_dice")
+async def game_dice_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "🎲 <b>Кости (дуэль)</b>\n\n"
+        "Команда: <code>кости [ставка]</code>\n"
+        "Пример: <code>кости 1000</code>\n\n"
+        "Правила:\n"
+        "1. Создаёшь дуэль\n"
+        "2. Другой игрок принимает вызов\n"
+        "3. Бот кидает кости\n"
+        "4. У кого больше очков - тот забирает банк"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "game_mines")
+async def game_mines_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "💣 <b>Мины</b>\n\n"
+        "Команда: <code>мины [ставка]</code>\n"
+        "Пример: <code>мины 1000</code>\n\n"
+        "Правила:\n"
+        "• Открывай клетки\n"
+        "• Чем больше открыл — тем выше множитель\n"
+        "• Попал на мину — проигрыш"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "game_blackjack")
+async def game_blackjack_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "🃏 <b>Блэкджек (21)</b>\n\n"
+        "Команда: <code>бджек [ставка]</code>\n"
+        "Пример: <code>бджек 1000</code>\n\n"
+        "Правила:\n"
+        "• Нужно набрать 21 или ближе к дилеру\n"
+        "• Туз = 11 или 1\n"
+        "• J, Q, K = 10 очков"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "game_under7over")
+async def game_under7over_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "💎 <b>Under 7 Over (Premium)</b>\n\n"
+        "Команда: <code>u7o [под/над/ровно] [ставка]</code>\n"
+        "Пример: <code>u7o под 1000</code>\n\n"
+        "Правила:\n"
+        "• Угадай сумму двух костей\n"
+        "• <b>Под</b> (меньше 7) — x2\n"
+        "• <b>Над</b> (больше 7) — x2\n"
+        "• <b>Ровно 7</b> — x4\n\n"
+        "⚠️ <b>ВНИМАНИЕ:</b> Игра только за GLC! Минимальная ставка: 1000 GLC"
+    )
+    await callback.answer()
+
+# ==================== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ====================
 @router.callback_query(F.data == "lottery_menu")
 async def lottery_menu(callback: CallbackQuery):
     now = datetime.now()
@@ -846,32 +1446,34 @@ async def my_stats_callback(callback: CallbackQuery):
     stats_dict = {s[0]: {"wins": s[2], "losses": s[1]-s[2], "total": s[1]} for s in stats}
     def get_stat(game): s = stats_dict.get(game, {"wins":0,"losses":0,"total":0}); return f"{s['wins']}💰 / {s['losses']}💔 / {s['total']} ставок"
     
-    # Получаем GLC статусы
     glc_statuses = db.get_user_glc_statuses(callback.from_user.id)
-    glc_icon = glc_statuses[0]['status_icon'] if glc_statuses else ""
+    active_glc = user.get('active_glc_status', '')
     
-    # Получаем эксклюзивные статусы за топы
+    glc_status_list = []
+    for s in glc_statuses:
+        if s['status_icon'] == active_glc:
+            glc_status_list.append(f"⭐ {s['status_icon']} {s['status_name']} (Активен)")
+        else:
+            glc_status_list.append(f"⬜ {s['status_icon']} {s['status_name']}")
+    
+    glc_text = "\n".join(glc_status_list) if glc_status_list else "Нет купленных статусов"
     game_status = get_user_status(callback.from_user.id)
-    
-    # Получаем статусы верификации
     admin_verified = user.get('is_admin_verified', 0)
     is_sponsor = user.get('is_sponsor', 0)
     sponsor_name = user.get('sponsor_name', '')
     
-    # Формируем имя с GLC статусом
     display_name = user.get('custom_name', user['username'])
-    if glc_icon:
-        display_name = f"{glc_icon} {display_name}"
+    if active_glc:
+        display_name = f"{active_glc} {display_name}"
     
     text = (
         f"👤 <b>Пользователь:</b> {display_name} | ID: {callback.from_user.id}\n"
     )
     
-    # Отображаем эксклюзивные статусы за топы
     if game_status:
-        text += f"🏆 <b>Статусы:</b> {game_status}\n\n"
-    else:
-        text += f"\n"
+        text += f"🏆 <b>Статусы за топ:</b> {game_status}\n"
+    
+    text += f"💎 <b>Статусы за GLC:</b>\n{glc_text}\n\n"
     
     text += (
         f"📈 <b>Общая статистика:</b>\n\n"
@@ -880,7 +1482,8 @@ async def my_stats_callback(callback: CallbackQuery):
         f"🎲 Кости: {get_stat('dice')}\n"
         f"💣 Мины: {get_stat('mines')}\n"
         f"🎟 Лотерея: {get_stat('lottery')}\n"
-        f"🃏 Блэкджек: {get_stat('blackjack')}\n\n"
+        f"🃏 Блэкджек: {get_stat('blackjack')}\n"
+        f"💎 Under 7 Over: {get_stat('under7over')}\n\n"
         f"🪙 Баланс LC: {user['balance_lc']}\n"
         f"💰 Баланс GLC: {user['balance_glc']}\n\n"
         f"😭 Всего проиграно: {user['total_lost']} LC\n"
@@ -903,34 +1506,55 @@ async def top_menu_callback(callback: CallbackQuery):
 async def top_category_callback(callback: CallbackQuery):
     top_type = callback.data.replace("top_", "")
     conn = db.get_connection()
+    
     if top_type == "balance":
         rows = conn.execute("SELECT user_id, username, custom_name, balance_lc FROM users WHERE is_banned=0 ORDER BY balance_lc DESC LIMIT 10").fetchall()
         text = "💰 <b>Топ богачей</b>\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     elif top_type == "roulette":
         rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='roulette' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
         text = "🃏 <b>Топ рулетки</b>\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     elif top_type == "slots":
         rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='slots' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
         text = "🎰 <b>Топ слотов</b>\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     elif top_type == "dice":
         rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='dice' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
         text = "🎲 <b>Топ костей</b>\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     elif top_type == "mines":
         rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='mines' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
         text = "💣 <b>Топ мин</b>\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     elif top_type == "lottery":
         rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='lottery' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
         text = "🎟 <b>Топ лотереи</b>\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     elif top_type == "blackjack":
         rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='blackjack' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
         text = "🃏 <b>Топ блэкджека</b>\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
+    elif top_type == "under7over":
+        rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='under7over' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
+        text = "💎 <b>Топ Under 7 Over</b>\n\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     else:
         await callback.answer("❌ Неизвестный топ")
         return
@@ -966,6 +1590,7 @@ async def referral_menu_callback(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_back_button())
     await callback.answer()
 
+# ==================== GLC ОБРАБОТЧИКИ ====================
 @router.callback_query(F.data == "glc_info")
 async def glc_info_callback(callback: CallbackQuery):
     user = db.get_user(callback.from_user.id)
@@ -1049,6 +1674,87 @@ async def buy_status_callback(callback: CallbackQuery):
         f"🛒 <b>Магазин статусов</b>\n\nТвой баланс GLC: {user['balance_glc'] - status['price']}\nСтраница 1/{TOTAL_PAGES}\n\nВыбери статус для покупки:",
         reply_markup=get_glc_shop_page(1, TOTAL_PAGES, STATUS_PAGES[0], owned_keys)
     )
+
+@router.callback_query(F.data == "glc_inventory")
+async def glc_inventory_callback(callback: CallbackQuery):
+    user = db.get_user(callback.from_user.id)
+    if not user:
+        await callback.answer("❌ Не зарегистрирован")
+        return
+    
+    owned = db.get_user_glc_statuses(callback.from_user.id)
+    if not owned:
+        await callback.message.edit_text(
+            "🎒 <b>Инвентарь статусов</b>\n\nУ тебя нет купленных статусов.\nКупи статус в магазине!",
+            reply_markup=get_back_button()
+        )
+        await callback.answer()
+        return
+    
+    active_icon = user.get('active_glc_status', '')
+    
+    items_per_page = 10
+    total_pages = (len(owned) + items_per_page - 1) // items_per_page
+    page = 0
+    
+    await show_inventory_page(callback.message, user, owned, active_icon, page, total_pages)
+    await callback.answer()
+
+async def show_inventory_page(message, user, owned, active_icon, page, total_pages):
+    items_per_page = 10
+    start = page * items_per_page
+    end = start + items_per_page
+    page_statuses = owned[start:end]
+    
+    text = f"🎒 <b>Инвентарь статусов</b>\n\nТвой баланс GLC: {user['balance_glc']}\n"
+    text += f"Страница {page + 1}/{total_pages}\n\n"
+    text += "Выбери статус для активации:\n\n"
+    
+    for s in page_statuses:
+        if s['status_icon'] == active_icon:
+            text += f"⭐ {s['status_icon']} {s['status_name']} (Активен)\n"
+        else:
+            text += f"⬜ {s['status_icon']} {s['status_name']}\n"
+    
+    await message.edit_text(text, reply_markup=get_glc_inventory_page(page_statuses, active_icon, page + 1, total_pages))
+
+@router.callback_query(F.data.startswith("inv_page_"))
+async def inventory_page_callback(callback: CallbackQuery):
+    page = int(callback.data.replace("inv_page_", "")) - 1
+    user = db.get_user(callback.from_user.id)
+    owned = db.get_user_glc_statuses(callback.from_user.id)
+    active_icon = user.get('active_glc_status', '')
+    total_pages = (len(owned) + 9) // 10
+    
+    await show_inventory_page(callback.message, user, owned, active_icon, page, total_pages)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("activate_status_"))
+async def activate_status_callback(callback: CallbackQuery):
+    status_key = callback.data.replace("activate_status_", "")
+    user_id = callback.from_user.id
+    
+    if not db.has_glc_status(user_id, status_key):
+        await callback.answer("❌ У тебя нет этого статуса!", show_alert=True)
+        return
+    
+    status = GLC_STATUSES[status_key]
+    
+    conn = db.get_connection()
+    conn.execute("UPDATE users SET active_glc_status = ? WHERE user_id = ?", (status['icon'], user_id))
+    conn.commit()
+    
+    await callback.answer(f"✅ Статус {status['icon']} {status['name']} активирован!", show_alert=True)
+    
+    user = db.get_user(user_id)
+    owned = db.get_user_glc_statuses(user_id)
+    active_icon = status['icon']
+    total_pages = (len(owned) + 9) // 10
+    await show_inventory_page(callback.message, user, owned, active_icon, 0, total_pages)
+
+@router.callback_query(F.data == "glc_menu")
+async def glc_menu_callback(callback: CallbackQuery):
+    await glc_info_callback(callback)
 
 @router.callback_query(F.data == "info")
 async def info_callback(callback: CallbackQuery):
@@ -1195,12 +1901,18 @@ async def my_cmd(message: Message):
         await message.answer("❌ Ты не зарегистрирован! Напиши /start")
         return
     
-    # Получаем эксклюзивные статусы за топы
     game_status = get_user_status(message.from_user.id)
-    
-    # Получаем GLC статусы
     glc_statuses = db.get_user_glc_statuses(message.from_user.id)
-    glc_icon = glc_statuses[0]['status_icon'] if glc_statuses else ""
+    active_glc = user.get('active_glc_status', '')
+    
+    glc_status_list = []
+    for s in glc_statuses:
+        if s['status_icon'] == active_glc:
+            glc_status_list.append(f"⭐ {s['status_icon']} {s['status_name']} (Активен)")
+        else:
+            glc_status_list.append(f"⬜ {s['status_icon']} {s['status_name']}")
+    
+    glc_text = "\n".join(glc_status_list) if glc_status_list else "Нет купленных статусов"
     
     admin_verified = user.get('is_admin_verified', 0)
     is_sponsor = user.get('is_sponsor', 0)
@@ -1209,7 +1921,9 @@ async def my_cmd(message: Message):
     text = f"🪙 Баланс LC: {user['balance_lc']}\n💰 Баланс GLC: {user['balance_glc']}\n"
     
     if game_status:
-        text += f"\n🏆 <b>Твои статусы:</b> {game_status}\n"
+        text += f"\n🏆 <b>Твои статусы за топ:</b> {game_status}\n"
+    
+    text += f"💎 <b>Статусы за GLC:</b>\n{glc_text}\n"
     
     if admin_verified:
         text += "\n✅ Вы верифицированный администратор!"
@@ -1218,38 +1932,59 @@ async def my_cmd(message: Message):
     
     await message.answer(text)
 
-@router.message(Command("tb", "tr", "ts", "tk", "tm", "tl", "tbj"))
+@router.message(Command("tb", "tr", "ts", "tk", "tm", "tl", "tbj", "tu7o"))
 async def top_cmd(message: Message):
     cmd = message.text[1:]
     conn = db.get_connection()
+    
     if cmd == "tb":
         rows = conn.execute("SELECT user_id, username, custom_name, balance_lc FROM users WHERE is_banned=0 ORDER BY balance_lc DESC LIMIT 10").fetchall()
         text = "💰 Топ богачей\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     elif cmd == "tr":
         rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='roulette' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
         text = "🃏 Топ рулетки\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     elif cmd == "ts":
         rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='slots' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
         text = "🎰 Топ слотов\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     elif cmd == "tk":
         rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='dice' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
         text = "🎲 Топ костей\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     elif cmd == "tm":
         rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='mines' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
         text = "💣 Топ мин\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     elif cmd == "tl":
         rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='lottery' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
         text = "🎟 Топ лотереи\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     elif cmd == "tbj":
         rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='blackjack' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
         text = "🃏 Топ блэкджека\n\n"
-        for i,r in enumerate(rows,1): text += f"{i}. {r[2] or r[1] or f'id{r[0]}'} — {r[3]} LC\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
+    elif cmd == "tu7o":
+        rows = conn.execute("SELECT u.user_id, u.username, u.custom_name, COALESCE(SUM(g.win_amount),0) as won FROM users u LEFT JOIN game_stats g ON u.user_id=g.user_id AND g.game_type='under7over' AND g.win=1 WHERE u.is_banned=0 GROUP BY u.user_id ORDER BY won DESC LIMIT 10").fetchall()
+        text = "💎 Топ Under 7 Over\n\n"
+        for i, row in enumerate(rows, 1):
+            display_name = get_display_name_with_status(row[0], row[2] or row[1] or f"id{row[0]}")
+            text += f"{i}. {display_name} — {row[3]} LC\n"
     else:
         await message.answer("❌ Неизвестный топ")
         return
@@ -1770,6 +2505,73 @@ async def blackjack_action(callback: CallbackQuery, state: FSMContext):
         await state.clear()
         await callback.answer()
 
+# ==================== UNDER 7 OVER ====================
+@router.message(F.text.lower().startswith(("u7o", "under7over")))
+async def play_under7over_game(message: Message):
+    parts = message.text.lower().split()
+    if len(parts) < 3:
+        await message.answer("❌ Формат: u7o [под/над/ровно] [ставка]\nПример: u7o под 1000")
+        return
+    
+    bet_type = parts[1]
+    if bet_type not in ["под", "над", "ровно"]:
+        await message.answer("❌ Выбери: под, над или ровно")
+        return
+    
+    try:
+        bet = int(parts[2])
+    except:
+        await message.answer("❌ Ставка должна быть числом")
+        return
+    
+    user = db.get_user(message.from_user.id)
+    if not user:
+        await message.answer("❌ Ты не зарегистрирован! Напиши /start")
+        return
+    if user['is_banned']:
+        await message.answer("⛔ Ты забанен!")
+        return
+    
+    # Минимальная ставка 1000 GLC
+    MIN_BET_GLC = 1000
+    
+    if bet < MIN_BET_GLC:
+        await message.answer(f"❌ Минимальная ставка: {MIN_BET_GLC} GLC")
+        return
+    if bet > MAX_BET:
+        await message.answer(f"❌ Максимальная ставка: {MAX_BET} GLC")
+        return
+    if bet > user['balance_glc']:
+        await message.answer("❌ Недостаточно GLC!")
+        return
+    
+    db.update_glc(message.from_user.id, -bet)
+    
+    win, multiplier, dice1, dice2, total = play_under7over(bet_type)
+    
+    result_text = f"🎲 <b>Under 7 Over</b>\n\n"
+    result_text += f"🎲 Кость 1: {dice1}\n"
+    result_text += f"🎲 Кость 2: {dice2}\n"
+    result_text += f"📊 Сумма: {total}\n\n"
+    
+    if win:
+        win_amount = bet * multiplier
+        db.update_glc(message.from_user.id, win_amount)
+        db.add_game_stat(message.from_user.id, "under7over", True, bet, win_amount)
+        update_user_status(message.from_user.id)
+        result_text += f"🎉 <b>Ты выиграл!</b>\n"
+        result_text += f"📈 Коэффициент: x{multiplier}\n"
+        result_text += f"💎 Выигрыш: +{win_amount} GLC\n"
+        result_text += f"💰 Баланс GLC: {user['balance_glc'] - bet + win_amount}"
+    else:
+        db.add_game_stat(message.from_user.id, "under7over", False, bet, 0)
+        update_user_status(message.from_user.id)
+        result_text += f"💔 <b>Ты проиграл!</b>\n"
+        result_text += f"💰 Потеряно: {bet} GLC\n"
+        result_text += f"💰 Баланс GLC: {user['balance_glc'] - bet}"
+    
+    await message.answer(result_text)
+
 # ==================== БИЗНЕС (КОМАНДЫ) ====================
 @router.callback_query(F.data == "buy_small")
 async def buy_small(callback: CallbackQuery):
@@ -1991,7 +2793,6 @@ async def cmd_promolist(message: Message):
 
 @router.message(Command("add_glc"))
 async def cmd_add_glc(message: Message):
-    """Выдать GLC пользователю"""
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Ты не админ!")
         return
@@ -2015,7 +2816,6 @@ async def cmd_add_glc(message: Message):
 
 @router.message(Command("verify_admin"))
 async def cmd_verify_admin(message: Message):
-    """Выдать верификацию администратора"""
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Ты не админ!")
         return
@@ -2038,13 +2838,12 @@ async def cmd_verify_admin(message: Message):
     db.log_action(user_id, "admin_verify", f"админ выдал верификацию")
     await message.answer(f"✅ Пользователь {user_id} теперь верифицирован как администратор!")
     try:
-        await message.bot.send_message(user_id, f"👑 <b>Поздравляем! Вы получили статус администратора бота!</b>\n\nТеперь вы отображаетесь как верифицированный администратор.")
+        await message.bot.send_message(user_id, f"👑 <b>Поздравляем! Вы получили статус администратора бота!</b>")
     except:
         pass
 
 @router.message(Command("unverify_admin"))
 async def cmd_unverify_admin(message: Message):
-    """Снять верификацию администратора"""
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Ты не админ!")
         return
@@ -2065,7 +2864,6 @@ async def cmd_unverify_admin(message: Message):
 
 @router.message(Command("verify_player"))
 async def cmd_verify_player(message: Message):
-    """Выдать статус спонсора игроку"""
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Ты не админ!")
         return
@@ -2089,13 +2887,12 @@ async def cmd_verify_player(message: Message):
     db.log_action(user_id, "sponsor_verify", f"админ выдал статус спонсора: {sponsor_name}")
     await message.answer(f"✅ Пользователь {user_id} теперь является спонсором бота: {sponsor_name}")
     try:
-        await message.bot.send_message(user_id, f"🎖️ <b>Поздравляем! Вы получили статус спонсора бота: {sponsor_name}</b>\n\nСпасибо за поддержку проекта!")
+        await message.bot.send_message(user_id, f"🎖️ <b>Поздравляем! Вы получили статус спонсора бота: {sponsor_name}</b>")
     except:
         pass
 
 @router.message(Command("unverify_player"))
 async def cmd_unverify_player(message: Message):
-    """Снять статус спонсора"""
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Ты не админ!")
         return
