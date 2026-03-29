@@ -436,7 +436,10 @@ def get_admin_menu():
         InlineKeyboardButton(text="🏦 Бизнес", callback_data="admin_business")
     )
     builder.row(
-        InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_mailing"),
+        InlineKeyboardButton(text="🏪 Выдать бизнес", callback_data="admin_give_business"),
+        InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_mailing")
+    )
+    builder.row(
         InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")
     )
     return builder.as_markup()
@@ -548,8 +551,10 @@ def is_admin(user_id): return user_id in ADMIN_IDS
 
 # ==================== СТАТУСЫ ИГРОКОВ (ТОПЫ) ====================
 def update_user_status(user_id: int):
+    """Обновление статусов пользователя (только если он в топе)"""
     conn = db.get_connection()
     
+    # Топ богачей
     rich_top = conn.execute("""
         SELECT user_id FROM users 
         WHERE is_banned = 0 
@@ -558,8 +563,9 @@ def update_user_status(user_id: int):
     """).fetchone()
     rich_top = rich_top[0] if rich_top else None
     
+    # Топы по играм
     games = ['roulette', 'slots', 'dice', 'mines', 'lottery', 'blackjack', 'under7over']
-    tops = {'rich': rich_top}
+    tops = {}
     
     STATUS_ICONS = {
         "roulette": "🃏",
@@ -573,14 +579,17 @@ def update_user_status(user_id: int):
     }
     
     for game in games:
-        top = conn.execute("""
+        top_user = conn.execute("""
             SELECT user_id FROM game_stats 
             WHERE game_type = ?
             GROUP BY user_id
             ORDER BY SUM(win_amount) DESC 
             LIMIT 1
         """, (game,)).fetchone()
-        tops[game] = top[0] if top else None
+        top_user_id = top_user[0] if top_user else None
+        tops[game] = top_user_id
+    
+    tops['rich'] = rich_top
     
     user_status = ""
     if tops['rich'] == user_id:
@@ -590,16 +599,22 @@ def update_user_status(user_id: int):
         if tops.get(game) == user_id:
             user_status += STATUS_ICONS[game]
     
+    unique_status = ''
+    for char in user_status:
+        if char not in unique_status:
+            unique_status += char
+    
     conn.execute("""
         INSERT INTO user_status (user_id, status)
         VALUES (?, ?)
         ON CONFLICT(user_id) DO UPDATE SET status = ?, updated_at = CURRENT_TIMESTAMP
-    """, (user_id, user_status, user_status))
+    """, (user_id, unique_status, unique_status))
     conn.commit()
     
-    return user_status
+    return unique_status
 
 def get_user_status(user_id: int) -> str:
+    """Получить статус пользователя (иконки за топы)"""
     conn = db.get_connection()
     cursor = conn.execute(
         "SELECT status FROM user_status WHERE user_id = ?",
@@ -609,9 +624,13 @@ def get_user_status(user_id: int) -> str:
     return row[0] if row else ""
 
 def get_display_name_with_status(user_id: int, username: str) -> str:
+    """Получить имя со статусом для отображения в топах"""
     user = db.get_user(user_id)
-    active_game = user.get('active_game_status', '') if user else ''
-    active_glc = user.get('active_glc_statuses', '') if user else ''
+    if not user:
+        return username
+    
+    active_game = user.get('active_game_status', '')
+    active_glc = user.get('active_glc_statuses', '')
     
     combined = active_glc + active_game
     if len(combined) > 7:
@@ -717,6 +736,7 @@ class BlackjackState(StatesGroup):
 
 class MailingState(StatesGroup):
     waiting_for_text = State()
+    waiting_for_confirmation = State()
 
 class Registration(StatesGroup):
     waiting_for_name = State()
@@ -1171,7 +1191,7 @@ async def status_active(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_active_status_menu(active_game, active_glc))
     await callback.answer()
 
-# ==================== ОБРАБОТЧИКИ МЕНЮ (КЛЮЧЕВЫЕ) ====================
+# ==================== ОБРАБОТЧИКИ МЕНЮ ====================
 @router.callback_query(F.data == "back_to_main")
 async def back_to_main(callback: CallbackQuery):
     await callback.message.edit_text("🎮 Главное меню:", reply_markup=get_main_menu())
@@ -1182,6 +1202,94 @@ async def casino_menu(callback: CallbackQuery):
     await callback.message.edit_text("🎰 <b>Казино Лудик</b>\n\nВыбери игру:", reply_markup=get_casino_menu())
     await callback.answer()
 
+# ==================== КНОПКИ ИГР ====================
+@router.callback_query(F.data == "game_roulette")
+async def game_roulette_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "🃏 <b>Рулетка</b>\n\n"
+        "Команда: <code>рул [цвет/число] [ставка]</code>\n"
+        "Пример: <code>рул красное 1000</code>\n\n"
+        "Доступные ставки:\n"
+        "• красное/черное (x2)\n"
+        "• число 0-36 (x36)\n"
+        "• ряд1/ряд2/ряд3 (x3)\n"
+        "• 1-12/13-24/25-36 (x3)\n"
+        "• 1-18/19-36 (x2)\n"
+        "• чёт/нечёт (x2)\n"
+        "• столбец1-12 (x12)"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "game_slots")
+async def game_slots_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "🎰 <b>Слоты</b>\n\n"
+        "Команда: <code>слоты [ставка]</code>\n"
+        "Пример: <code>слоты 1000</code>\n\n"
+        "Выигрышные комбинации:\n"
+        "• 7️⃣7️⃣7️⃣ — x10 (ДЖЕКПОТ)\n"
+        "• 💎💎💎 — x5\n"
+        "• 🍋🍋🍋 — x3\n"
+        "• 🍒🍒🍒 — x3"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "game_dice")
+async def game_dice_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "🎲 <b>Кости (дуэль)</b>\n\n"
+        "Команда: <code>кости [ставка]</code>\n"
+        "Пример: <code>кости 1000</code>\n\n"
+        "Правила:\n"
+        "1. Создаёшь дуэль\n"
+        "2. Другой игрок принимает вызов\n"
+        "3. Бот кидает кости\n"
+        "4. У кого больше очков - тот забирает банк"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "game_mines")
+async def game_mines_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "💣 <b>Мины</b>\n\n"
+        "Команда: <code>мины [ставка]</code>\n"
+        "Пример: <code>мины 1000</code>\n\n"
+        "Правила:\n"
+        "• Открывай клетки\n"
+        "• Чем больше открыл — тем выше множитель\n"
+        "• Попал на мину — проигрыш"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "game_blackjack")
+async def game_blackjack_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "🃏 <b>Блэкджек (21)</b>\n\n"
+        "Команда: <code>бджек [ставка]</code>\n"
+        "Пример: <code>бджек 1000</code>\n\n"
+        "Правила:\n"
+        "• Нужно набрать 21 или ближе к дилеру\n"
+        "• Туз = 11 или 1\n"
+        "• J, Q, K = 10 очков"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "game_under7over")
+async def game_under7over_callback(callback: CallbackQuery):
+    await callback.message.answer(
+        "💎 <b>Under 7 Over (Premium)</b>\n\n"
+        "Команда: <code>u7o [под/над/ровно] [ставка]</code>\n"
+        "Пример: <code>u7o под 1000</code>\n\n"
+        "Правила:\n"
+        "• Угадай сумму двух костей\n"
+        "• <b>Под</b> (меньше 7) — x2\n"
+        "• <b>Над</b> (больше 7) — x2\n"
+        "• <b>Ровно 7</b> — x4\n\n"
+        "⚠️ <b>ВНИМАНИЕ:</b> Игра только за GLC! Минимальная ставка: 1000 GLC"
+    )
+    await callback.answer()
+
+# ==================== ЛОТЕРЕЯ ====================
 @router.callback_query(F.data == "lottery_menu")
 async def lottery_menu(callback: CallbackQuery):
     now = datetime.now()
@@ -1213,6 +1321,7 @@ async def lottery_menu(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_back_button())
     await callback.answer()
 
+# ==================== ДОНАТ ====================
 @router.callback_query(F.data == "donate_menu")
 async def donate_menu(callback: CallbackQuery):
     text = (
@@ -1227,6 +1336,7 @@ async def donate_menu(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
 
+# ==================== БОНУС ====================
 @router.callback_query(F.data == "get_bonus")
 async def get_bonus_callback(callback: CallbackQuery):
     user = db.get_user(callback.from_user.id)
@@ -1248,6 +1358,7 @@ async def get_bonus_callback(callback: CallbackQuery):
     await callback.answer(f"🎁 +{bonus} LC", show_alert=True)
     await callback.message.edit_text(f"🎁 <b>Бонус получен!</b>\n\n+{bonus} LC\n💰 Баланс: {db.get_user(callback.from_user.id)['balance_lc']} LC\n\nСледующий бонус через 5 часов.", reply_markup=get_back_button())
 
+# ==================== БИЗНЕС ====================
 @router.callback_query(F.data == "business_menu")
 async def business_menu_callback(callback: CallbackQuery):
     user = db.get_user(callback.from_user.id)
@@ -1275,47 +1386,48 @@ async def business_menu_callback(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_business_menu())
     await callback.answer()
 
+# ==================== МОЯ СТАТА ====================
 @router.callback_query(F.data == "my_stats")
 async def my_stats_callback(callback: CallbackQuery):
     user = db.get_user(callback.from_user.id)
     if not user:
         await callback.answer("❌ Не зарегистрирован", show_alert=True)
         return
+    
     conn = db.get_connection()
     stats = conn.execute("SELECT game_type, COUNT(*) as total, SUM(CASE WHEN win THEN 1 ELSE 0 END) as wins FROM game_stats WHERE user_id = ? GROUP BY game_type", (callback.from_user.id,)).fetchall()
     stats_dict = {s[0]: {"wins": s[2], "losses": s[1]-s[2], "total": s[1]} for s in stats}
     def get_stat(game): s = stats_dict.get(game, {"wins":0,"losses":0,"total":0}); return f"{s['wins']}💰 / {s['losses']}💔 / {s['total']} ставок"
     
-    glc_statuses = db.get_user_glc_statuses(callback.from_user.id)
     active_glc = user.get('active_glc_statuses', '')
-    glc_icons = []
-    for s in glc_statuses:
-        if s['status_icon'] in active_glc:
-            glc_icons.append(f"⭐ {s['status_icon']}")
-        else:
-            glc_icons.append(f"⬜ {s['status_icon']}")
-    glc_text = " ".join(glc_icons) if glc_icons else "Нет статусов"
-    
-    active_game = user.get('active_game_status', '')
-    game_icons = ' '.join(active_game) if active_game else "Не выбраны"
+    if active_glc:
+        glc_display = ' ; '.join(list(active_glc))
+    else:
+        glc_display = "Не выбраны"
     
     game_status = get_user_status(callback.from_user.id)
+    active_game_for_name = user.get('active_game_status', '')
+    active_glc_for_name = user.get('active_glc_statuses', '')
+    
+    display_name = user.get('custom_name', user['username'])
+    if active_glc_for_name:
+        display_name = f"{active_glc_for_name} {display_name}"
+    elif active_game_for_name:
+        display_name = f"{active_game_for_name} {display_name}"
+    
     admin_verified = user.get('is_admin_verified', 0)
     is_sponsor = user.get('is_sponsor', 0)
     sponsor_name = user.get('sponsor_name', '')
-    
-    display_name = user.get('custom_name', user['username'])
-    if active_glc:
-        display_name = f"{active_glc} {display_name}"
     
     text = (
         f"👤 <b>Пользователь:</b> {display_name} | ID: {callback.from_user.id}\n"
     )
     
-    if game_icons != "Не выбраны":
+    if game_status:
+        game_icons = ' '.join(list(game_status))
         text += f"🏆 <b>Статусы за топ:</b> {game_icons}\n"
     
-    text += f"💎 <b>Статусы за GLC:</b>\n{glc_text}\n\n"
+    text += f"💎 <b>Статусы за GLC:</b> {glc_display}\n\n"
     
     text += (
         f"📈 <b>Общая статистика:</b>\n\n"
@@ -1339,6 +1451,7 @@ async def my_stats_callback(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_back_button())
     await callback.answer()
 
+# ==================== ТОПЫ ====================
 @router.callback_query(F.data == "top_menu")
 async def top_menu_callback(callback: CallbackQuery):
     await callback.message.edit_text("🏆 <b>Выбери категорию топов:</b>", reply_markup=get_top_menu())
@@ -1403,6 +1516,7 @@ async def top_category_callback(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_back_button())
     await callback.answer()
 
+# ==================== ПРОМОКОД ====================
 @router.callback_query(F.data == "activate_promo")
 async def activate_promo_callback(callback: CallbackQuery):
     await callback.message.edit_text(
@@ -1411,6 +1525,7 @@ async def activate_promo_callback(callback: CallbackQuery):
     )
     await callback.answer()
 
+# ==================== РЕФЕРАЛЫ ====================
 @router.callback_query(F.data == "referral_menu")
 async def referral_menu_callback(callback: CallbackQuery):
     bot = callback.bot
@@ -1432,7 +1547,7 @@ async def referral_menu_callback(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_back_button())
     await callback.answer()
 
-# ==================== GLC ОБРАБОТЧИКИ ====================
+# ==================== GLC ====================
 @router.callback_query(F.data == "glc_info")
 async def glc_info_callback(callback: CallbackQuery):
     user = db.get_user(callback.from_user.id)
@@ -1575,6 +1690,7 @@ async def inventory_page_callback(callback: CallbackQuery):
 async def glc_menu_callback(callback: CallbackQuery):
     await glc_info_callback(callback)
 
+# ==================== ИНФОРМАЦИЯ ====================
 @router.callback_query(F.data == "info")
 async def info_callback(callback: CallbackQuery):
     text = (
@@ -1901,6 +2017,73 @@ async def cmd_check_business(message: Message):
     
     await message.answer(text)
 
+# ==================== ВЫДАЧА БИЗНЕСА ====================
+@router.callback_query(F.data == "admin_give_business")
+async def admin_give_business(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "🏪 <b>Выдача бизнеса</b>\n\n"
+        "Введите команду:\n"
+        "<code>/give_business [user_id] [тип]</code>\n\n"
+        "<b>Типы бизнеса:</b>\n"
+        "• <code>small</code> — 🏪 Ларек у дома 24/7\n"
+        "• <code>medium</code> — 🍺 Пивнуха\n"
+        "• <code>large</code> — 🏭 Завод по производству металла\n"
+        "• <code>paid</code> — 🏦 Банк (платный)\n\n"
+        "<b>Пример:</b>\n"
+        "<code>/give_business 123456789 large</code>",
+        reply_markup=get_back_button()
+    )
+    await callback.answer()
+
+@router.message(Command("give_business"))
+async def cmd_give_business(message: Message):
+    """Выдать бизнес пользователю (админ-команда)"""
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Ты не админ!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("❌ Использование: /give_business [user_id] [тип]\n\nТипы бизнеса:\n• small - Ларек у дома 24/7\n• medium - Пивнуха\n• large - Завод по производству металла\n• paid - Банк (платный)")
+        return
+    
+    try:
+        user_id = int(args[1])
+        biz_type = args[2]
+    except:
+        await message.answer("❌ Неверный формат")
+        return
+    
+    if biz_type not in ["small", "medium", "large", "paid"]:
+        await message.answer("❌ Неверный тип бизнеса. Доступно: small, medium, large, paid")
+        return
+    
+    conn = db.get_connection()
+    
+    existing = conn.execute("SELECT * FROM business WHERE user_id = ?", (user_id,)).fetchone()
+    if existing:
+        await message.answer(f"❌ У пользователя {user_id} уже есть бизнес! Сначала удалите старый командой /remove_business {user_id}")
+        return
+    
+    conn.execute("""
+        INSERT INTO business (user_id, business_type, last_collected)
+        VALUES (?, ?, datetime('now'))
+    """, (user_id, biz_type))
+    conn.commit()
+    
+    names = {"small":"🏪 Ларек у дома 24/7", "medium":"🍺 Пивнуха", "large":"🏭 Завод по производству металла", "paid":"🏦 Банк"}
+    
+    await message.answer(f"✅ Пользователю {user_id} выдан бизнес: {names.get(biz_type)}")
+    
+    try:
+        await message.bot.send_message(user_id, f"🏢 <b>Вам выдан бизнес: {names.get(biz_type)}</b>\n\nЗабирайте доход в разделе 💼 Бизнес")
+    except:
+        pass
+
 # ==================== РАССЫЛКА ====================
 @router.callback_query(F.data == "admin_mailing")
 async def admin_mailing(callback: CallbackQuery, state: FSMContext):
@@ -1910,17 +2093,20 @@ async def admin_mailing(callback: CallbackQuery, state: FSMContext):
     
     await state.set_state(MailingState.waiting_for_text)
     await callback.message.edit_text(
-        "📢 <b>Рассылка сообщения</b>\n\n"
-        "Введите текст сообщения для рассылки.\n"
-        "Сообщение будет отправлено ВСЕМ пользователям бота.\n\n"
+        "📢 <b>Создание рассылки</b>\n\n"
+        "Введите текст сообщения для рассылки.\n\n"
+        "Поддерживается форматирование HTML:\n"
+        "<code>&lt;b&gt;жирный&lt;/b&gt;</code>\n"
+        "<code>&lt;i&gt;курсив&lt;/i&gt;</code>\n"
+        "<code>&lt;a href='url'&gt;ссылка&lt;/a&gt;</code>\n\n"
         "✏️ <b>Введите текст:</b>\n\n"
-        "Для отмены введите 'отмена'",
+        "Для отмены введите <b>отмена</b>",
         reply_markup=get_back_button()
     )
     await callback.answer()
 
 @router.message(MailingState.waiting_for_text)
-async def process_mailing(message: Message, state: FSMContext):
+async def process_mailing_text(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Доступ запрещен!")
         await state.clear()
@@ -1943,21 +2129,27 @@ async def process_mailing(message: Message, state: FSMContext):
         return
     
     await state.update_data(mailing_text=mailing_text, users=users)
+    await state.set_state(MailingState.waiting_for_confirmation)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="mailing_confirm"),
+         InlineKeyboardButton(text="✏️ Исправить", callback_data="mailing_edit")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="mailing_cancel")]
+    ])
     
     await message.answer(
         f"📢 <b>Подтверждение рассылки</b>\n\n"
-        f"Текст сообщения:\n"
-        f"<code>{mailing_text[:200]}{'...' if len(mailing_text) > 200 else ''}</code>\n\n"
-        f"👥 Будет отправлено: {len(users)} пользователям\n\n"
-        f"✅ Напишите <b>да</b> для подтверждения\n"
-        f"❌ Напишите <b>отмена</b> для отмены"
+        f"<b>Текст сообщения:</b>\n"
+        f"{mailing_text}\n\n"
+        f"👥 Будет отправлено: <b>{len(users)}</b> пользователям\n\n"
+        f"✅ Подтвердить отправку?",
+        reply_markup=keyboard
     )
 
-@router.message(MailingState.waiting_for_text, F.text.lower() == "да")
-async def confirm_mailing(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ Доступ запрещен!")
-        await state.clear()
+@router.callback_query(F.data == "mailing_confirm", MailingState.waiting_for_confirmation)
+async def mailing_confirm(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
         return
     
     data = await state.get_data()
@@ -1965,34 +2157,99 @@ async def confirm_mailing(message: Message, state: FSMContext):
     users = data.get('users')
     
     if not mailing_text or not users:
-        await message.answer("❌ Ошибка: нет данных для рассылки")
+        await callback.message.edit_text("❌ Ошибка: нет данных для рассылки")
         await state.clear()
         return
     
-    await message.answer(f"📢 <b>Начинаю рассылку...</b>\n\n⏳ Отправка сообщений {len(users)} пользователям...")
+    await callback.message.edit_text(f"📢 <b>Начинаю рассылку...</b>\n\n⏳ Отправка сообщений {len(users)} пользователям...")
     
     success_count = 0
     fail_count = 0
     
     for user in users:
         try:
-            await message.bot.send_message(user[0], mailing_text)
+            await callback.bot.send_message(user[0], mailing_text, parse_mode=ParseMode.HTML)
             success_count += 1
             await asyncio.sleep(0.05)
         except:
             fail_count += 1
     
-    await message.answer(
+    db.log_action(callback.from_user.id, "admin_mailing", f"отправил рассылку {success_count}/{len(users)} пользователям")
+    
+    await callback.message.edit_text(
         f"✅ <b>Рассылка завершена!</b>\n\n"
-        f"📨 Успешно отправлено: {success_count}\n"
-        f"❌ Не доставлено: {fail_count}\n"
-        f"👥 Всего пользователей: {len(users)}"
+        f"📨 Успешно отправлено: <b>{success_count}</b>\n"
+        f"❌ Не доставлено: <b>{fail_count}</b>\n"
+        f"👥 Всего пользователей: <b>{len(users)}</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад в админ-панель", callback_data="admin_panel")]])
     )
     
-    db.log_action(message.from_user.id, "admin_mailing", f"отправил рассылку {success_count}/{len(users)} пользователям")
-    
     await state.clear()
-    await message.answer("🎮 Главное меню:", reply_markup=get_main_menu())
+
+@router.callback_query(F.data == "mailing_edit", MailingState.waiting_for_confirmation)
+async def mailing_edit(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    await state.set_state(MailingState.waiting_for_text)
+    await callback.message.edit_text(
+        "📢 <b>Исправление текста рассылки</b>\n\n"
+        "Введите исправленный текст сообщения:\n\n"
+        "Для отмены введите <b>отмена</b>",
+        reply_markup=get_back_button()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "mailing_cancel", MailingState.waiting_for_confirmation)
+async def mailing_cancel(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+        return
+    
+    await callback.message.edit_text("❌ Рассылка отменена")
+    await state.clear()
+    await callback.message.answer("🎮 Главное меню:", reply_markup=get_main_menu())
+    await callback.answer()
+
+@router.message(Command("rassilka"))
+async def cmd_rassilka(message: Message, state: FSMContext):
+    """Команда для рассылки: /rassilka текст сообщения"""
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Ты не админ!")
+        return
+    
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("❌ Использование: /rassilka [текст сообщения]")
+        return
+    
+    mailing_text = args[1]
+    
+    conn = db.get_connection()
+    users = conn.execute("SELECT user_id FROM users").fetchall()
+    
+    if not users:
+        await message.answer("❌ Нет пользователей для рассылки")
+        return
+    
+    await state.update_data(mailing_text=mailing_text, users=users)
+    await state.set_state(MailingState.waiting_for_confirmation)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="mailing_confirm"),
+         InlineKeyboardButton(text="✏️ Исправить", callback_data="mailing_edit")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="mailing_cancel")]
+    ])
+    
+    await message.answer(
+        f"📢 <b>Подтверждение рассылки</b>\n\n"
+        f"<b>Текст сообщения:</b>\n"
+        f"{mailing_text}\n\n"
+        f"👥 Будет отправлено: <b>{len(users)}</b> пользователям\n\n"
+        f"✅ Подтвердить отправку?",
+        reply_markup=keyboard
+    )
 
 # ==================== ИГРЫ (КОМАНДЫ) ====================
 @router.message(Command("promo"))
@@ -2761,10 +3018,13 @@ async def play_under7over_game(message: Message):
     
     win, multiplier, dice1, dice2, total = play_under7over(bet_type)
     
+    bet_type_text = {"под": "меньше 7", "над": "больше 7", "ровно": "ровно 7"}.get(bet_type, bet_type)
+    
     result_text = f"🎲 <b>Under 7 Over</b>\n\n"
     result_text += f"🎲 Кость 1: {dice1}\n"
     result_text += f"🎲 Кость 2: {dice2}\n"
     result_text += f"📊 Сумма: {total}\n\n"
+    result_text += f"🎯 Твоя ставка: {bet_type_text}\n\n"
     
     if win:
         win_amount = bet * multiplier
@@ -2917,7 +3177,7 @@ async def sell_business_callback(callback: CallbackQuery):
     
     await business_menu_callback(callback)
 
-# ==================== АДМИН-КОМАНДЫ (БАЗОВЫЕ) ====================
+# ==================== АДМИН-КОМАНДЫ ====================
 @router.message(Command("ban"))
 async def cmd_ban(message: Message):
     if not is_admin(message.from_user.id):
@@ -3172,93 +3432,6 @@ async def cmd_donate_confirm(message: Message):
             await message.bot.send_message(user_id, f"💰 <b>Донат зачислен!</b>\n\nТы получил +{lc_amount} LC")
         except:
             pass
-
-# ==================== КНОПКИ ИГР (СПРАВКА) ====================
-@router.callback_query(F.data == "game_roulette")
-async def game_roulette_callback(callback: CallbackQuery):
-    await callback.message.answer(
-        "🃏 <b>Рулетка</b>\n\n"
-        "Команда: <code>рул [цвет/число] [ставка]</code>\n"
-        "Пример: <code>рул красное 1000</code>\n\n"
-        "Доступные ставки:\n"
-        "• красное/черное (x2)\n"
-        "• число 0-36 (x36)\n"
-        "• ряд1/ряд2/ряд3 (x3)\n"
-        "• 1-12/13-24/25-36 (x3)\n"
-        "• 1-18/19-36 (x2)\n"
-        "• чёт/нечёт (x2)\n"
-        "• столбец1-12 (x12)"
-    )
-    await callback.answer()
-
-@router.callback_query(F.data == "game_slots")
-async def game_slots_callback(callback: CallbackQuery):
-    await callback.message.answer(
-        "🎰 <b>Слоты</b>\n\n"
-        "Команда: <code>слоты [ставка]</code>\n"
-        "Пример: <code>слоты 1000</code>\n\n"
-        "Выигрышные комбинации:\n"
-        "• 7️⃣7️⃣7️⃣ — x10 (ДЖЕКПОТ)\n"
-        "• 💎💎💎 — x5\n"
-        "• 🍋🍋🍋 — x3\n"
-        "• 🍒🍒🍒 — x3"
-    )
-    await callback.answer()
-
-@router.callback_query(F.data == "game_dice")
-async def game_dice_callback(callback: CallbackQuery):
-    await callback.message.answer(
-        "🎲 <b>Кости (дуэль)</b>\n\n"
-        "Команда: <code>кости [ставка]</code>\n"
-        "Пример: <code>кости 1000</code>\n\n"
-        "Правила:\n"
-        "1. Создаёшь дуэль\n"
-        "2. Другой игрок принимает вызов\n"
-        "3. Бот кидает кости\n"
-        "4. У кого больше очков - тот забирает банк"
-    )
-    await callback.answer()
-
-@router.callback_query(F.data == "game_mines")
-async def game_mines_callback(callback: CallbackQuery):
-    await callback.message.answer(
-        "💣 <b>Мины</b>\n\n"
-        "Команда: <code>мины [ставка]</code>\n"
-        "Пример: <code>мины 1000</code>\n\n"
-        "Правила:\n"
-        "• Открывай клетки\n"
-        "• Чем больше открыл — тем выше множитель\n"
-        "• Попал на мину — проигрыш"
-    )
-    await callback.answer()
-
-@router.callback_query(F.data == "game_blackjack")
-async def game_blackjack_callback(callback: CallbackQuery):
-    await callback.message.answer(
-        "🃏 <b>Блэкджек (21)</b>\n\n"
-        "Команда: <code>бджек [ставка]</code>\n"
-        "Пример: <code>бджек 1000</code>\n\n"
-        "Правила:\n"
-        "• Нужно набрать 21 или ближе к дилеру\n"
-        "• Туз = 11 или 1\n"
-        "• J, Q, K = 10 очков"
-    )
-    await callback.answer()
-
-@router.callback_query(F.data == "game_under7over")
-async def game_under7over_callback(callback: CallbackQuery):
-    await callback.message.answer(
-        "💎 <b>Under 7 Over (Premium)</b>\n\n"
-        "Команда: <code>u7o [под/над/ровно] [ставка]</code>\n"
-        "Пример: <code>u7o под 1000</code>\n\n"
-        "Правила:\n"
-        "• Угадай сумму двух костей\n"
-        "• <b>Под</b> (меньше 7) — x2\n"
-        "• <b>Над</b> (больше 7) — x2\n"
-        "• <b>Ровно 7</b> — x4\n\n"
-        "⚠️ <b>ВНИМАНИЕ:</b> Игра только за GLC! Минимальная ставка: 1000 GLC"
-    )
-    await callback.answer()
 
 # ==================== ЗАПУСК ====================
 async def create_start_promos():
