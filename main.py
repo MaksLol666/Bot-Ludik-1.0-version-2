@@ -3119,12 +3119,32 @@ async def play_under7over_game(message: Message):
         await message.answer("❌ Недостаточно GLC!")
         return
     
+    # Сохраняем начальный баланс
+    initial_balance = user['balance_glc']
+    
+    # Списываем ставку
     db.update_glc(message.from_user.id, -bet)
     
-    win, multiplier, dice1, dice2, total = play_under7over(bet_type)
+    # Кидаем кости
+    dice1 = random.randint(1, 6)
+    dice2 = random.randint(1, 6)
+    total = dice1 + dice2
     
-    bet_type_text = {"под": "меньше 7", "над": "больше 7", "ровно": "ровно 7"}.get(bet_type, bet_type)
+    # Определяем результат в зависимости от типа ставки
+    if bet_type == "под":
+        win = total < 7
+        multiplier = 2
+        bet_type_text = "меньше 7"
+    elif bet_type == "над":
+        win = total > 7
+        multiplier = 2
+        bet_type_text = "больше 7"
+    else:  # ровно
+        win = total == 7
+        multiplier = 4
+        bet_type_text = "ровно 7"
     
+    # Формируем результат
     result_text = f"🎲 <b>Under 7 Over</b>\n\n"
     result_text += f"🎲 Кость 1: {dice1}\n"
     result_text += f"🎲 Кость 2: {dice2}\n"
@@ -3133,27 +3153,26 @@ async def play_under7over_game(message: Message):
     
     if win:
         win_amount = bet * multiplier
+        # Добавляем выигрыш
         db.update_glc(message.from_user.id, win_amount)
         db.add_game_stat(message.from_user.id, "under7over", True, bet, win_amount)
         update_user_status(message.from_user.id)
         
-        new_user = db.get_user(message.from_user.id)
-        new_balance = new_user['balance_glc']
+        final_balance = db.get_user(message.from_user.id)['balance_glc']
         
         result_text += f"🎉 <b>Ты выиграл!</b>\n"
         result_text += f"📈 Коэффициент: x{multiplier}\n"
         result_text += f"💎 Выигрыш: +{win_amount} GLC\n"
-        result_text += f"💰 Баланс GLC: {new_balance}"
+        result_text += f"💰 Баланс GLC: {final_balance}"
     else:
         db.add_game_stat(message.from_user.id, "under7over", False, bet, 0)
         update_user_status(message.from_user.id)
         
-        new_user = db.get_user(message.from_user.id)
-        new_balance = new_user['balance_glc']
+        final_balance = db.get_user(message.from_user.id)['balance_glc']
         
         result_text += f"💔 <b>Ты проиграл!</b>\n"
         result_text += f"💰 Потеряно: {bet} GLC\n"
-        result_text += f"💰 Баланс GLC: {new_balance}"
+        result_text += f"💰 Баланс GLC: {final_balance}"
     
     await message.answer(result_text)
 
