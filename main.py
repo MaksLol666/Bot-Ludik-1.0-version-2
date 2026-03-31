@@ -52,8 +52,9 @@ class Database:
 
     def get_connection(self):
         if self._connection is None:
-            self._connection = sqlite3.connect(self.db_path)
+            self._connection = sqlite3.connect(self.db_path, timeout=10)
             self._connection.row_factory = sqlite3.Row
+            self._connection.execute("PRAGMA foreign_keys = ON")
         return self._connection
 
     def update_tables(self):
@@ -289,10 +290,13 @@ class Database:
         return True, "Перевод выполнен успешно"
 
     def log_action(self, user_id: int, action: str, details: str = ""):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO user_logs (user_id, action, details) VALUES (?, ?, ?)", (user_id, action, details))
-        conn.commit()
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO user_logs (user_id, action, details) VALUES (?, ?, ?)", (user_id, action, details))
+            conn.commit()
+        except Exception as e:
+            print(f"Failed to log action: {e}")
 
     def get_user_glc_statuses(self, user_id: int):
         conn = self.get_connection()
@@ -629,24 +633,26 @@ def get_display_name_with_status(user_id: int, username: str) -> str:
     if not user:
         return username
     
-    # Получаем только статусы, которые реально есть у игрока
+    # Получаем статусы, которые есть у игрока (из user_status)
     game_status = get_user_status(user_id)
-    glc_statuses = db.get_user_glc_statuses(user_id)
+    
+    # Получаем активные статусы из настроек пользователя
+    active_game = user.get('active_game_status', '')
     active_glc = user.get('active_glc_statuses', '')
     
-    # Формируем список активных GLC статусов (только те, которые есть в inventory)
+    # Получаем купленные GLC статусы
+    glc_statuses = db.get_user_glc_statuses(user_id)
+    
+    # Формируем список активных GLC статусов (только те, которые есть в inventory И активны)
     glc_icons = []
     for s in glc_statuses:
         if s['status_icon'] in active_glc:
             glc_icons.append(s['status_icon'])
     
-    # Формируем список игровых статусов (только те, которые есть у игрока)
+    # Формируем список активных топ-статусов (только те, которые есть у игрока И активны)
     game_icons = []
-    if game_status:
-        # Игровые статусы - это те, которые есть в game_status
-        # Но нужно убедиться, что игрок действительно является топом
-        # game_status уже содержит только те иконки, по которым игрок в топе
-        for icon in game_status:
+    for icon in active_game:
+        if icon in game_status:
             game_icons.append(icon)
     
     # Собираем все статусы в одном списке
@@ -730,24 +736,6 @@ def hand_score(hand):
 
 def hand_to_string(hand):
     return ' '.join(hand)
-
-# Under 7 Over
-def play_under7over(bet_type):
-    dice1 = random.randint(1, 6)
-    dice2 = random.randint(1, 6)
-    total = dice1 + dice2
-    
-    if bet_type == "under":
-        win = total < 7
-        multiplier = 2
-    elif bet_type == "over":
-        win = total > 7
-        multiplier = 2
-    else:
-        win = total == 7
-        multiplier = 4
-    
-    return win, multiplier, dice1, dice2, total
 
 # ==================== СОСТОЯНИЯ ====================
 class MinesState(StatesGroup):
@@ -998,21 +986,17 @@ async def cmd_глянуть(message: Message):
     # Формируем строку активных статусов для отображения в профиле
     active_statuses = []
     if game_status:
-        # Игровые статусы - только те, которые есть у игрока (уже в game_status)
         for icon in game_status:
             active_statuses.append(icon)
     if active_glc:
-        # GLC статусы - только активные иконки
         for icon in active_glc:
             active_statuses.append(icon)
     
-    # Ограничиваем до 7 статусов
     if len(active_statuses) > 7:
         active_statuses = active_statuses[:7]
     
     active_text = ''.join(active_statuses) if active_statuses else "Не выбраны"
     
-    # Для отображения имени со статусами
     if active_text != "Не выбраны":
         display_name_with_status = f"{active_text} {display_name}"
     else:
@@ -1071,7 +1055,6 @@ async def status_menu(callback: CallbackQuery):
     active_game = user.get('active_game_status', '')
     active_glc = user.get('active_glc_statuses', '')
     
-    # Получаем реальные статусы игрока
     game_status = get_user_status(callback.from_user.id)
     
     text = (
@@ -1092,10 +1075,8 @@ async def status_game_menu(callback: CallbackQuery):
         await callback.answer("❌ Не зарегистрирован", show_alert=True)
         return
     
-    # Получаем только те статусы, которые реально есть у игрока
     game_status = get_user_status(callback.from_user.id)
     
-    # Список всех возможных статусов с их иконками
     all_game_statuses = [
         ("🃏", "Рулетка"),
         ("🎰", "Слоты"),
@@ -1107,7 +1088,6 @@ async def status_game_menu(callback: CallbackQuery):
         ("💰", "Богач")
     ]
     
-    # Фильтруем только те статусы, которые есть у игрока
     available_statuses = [(icon, name) for icon, name in all_game_statuses if icon in game_status]
     
     if not available_statuses:
@@ -1141,7 +1121,6 @@ async def toggle_game_status(callback: CallbackQuery):
         await callback.answer("❌ Не зарегистрирован", show_alert=True)
         return
     
-    # Проверяем, есть ли у игрока этот статус
     game_status = get_user_status(callback.from_user.id)
     if icon not in game_status:
         await callback.answer("❌ У тебя нет этого статуса!", show_alert=True)
@@ -1163,7 +1142,6 @@ async def toggle_game_status(callback: CallbackQuery):
     
     await callback.answer(f"{'✅ Включен' if icon in new_active else '❌ Выключен'}")
     
-    # Получаем доступные статусы
     all_game_statuses = [
         ("🃏", "Рулетка"),
         ("🎰", "Слоты"),
@@ -1254,7 +1232,6 @@ async def status_active(callback: CallbackQuery):
     
     game_status = get_user_status(callback.from_user.id)
     
-    # Получаем только те статусы, которые есть у игрока
     available_game_icons = [icon for icon in active_game if icon in game_status]
     active_game_display = ''.join(available_game_icons) if available_game_icons else "Не выбраны"
     
@@ -1492,13 +1469,11 @@ async def my_stats_callback(callback: CallbackQuery):
     
     # GLC статусы
     glc_statuses = db.get_user_glc_statuses(callback.from_user.id)
-    glc_icons = []
+    active_glc_icons = []
     for s in glc_statuses:
         if s['status_icon'] in active_glc:
-            glc_icons.append(f"⭐ {s['status_icon']}")
-        else:
-            glc_icons.append(f"⬜ {s['status_icon']}")
-    glc_display = " ; ".join(glc_icons) if glc_icons else "Нет статусов"
+            active_glc_icons.append(s['status_icon'])
+    glc_text = " ; ".join(active_glc_icons) if active_glc_icons else "Нет статусов"
     
     # Формируем отображаемое имя
     display_name = user.get('custom_name', user['username'])
@@ -1526,7 +1501,7 @@ async def my_stats_callback(callback: CallbackQuery):
         game_icons = ' '.join(list(game_status))
         text += f"🏆 <b>Статусы за топ:</b> {game_icons}\n"
     
-    text += f"💎 <b>Статусы за GLC:</b>\n{glc_display}\n\n"
+    text += f"💎 <b>Статусы за GLC:</b>\n{glc_text}\n\n"
     
     text += (
         f"📈 <b>Общая статистика:</b>\n\n"
@@ -2471,17 +2446,16 @@ async def my_cmd(message: Message):
     game_status = get_user_status(message.from_user.id)
     glc_statuses = db.get_user_glc_statuses(message.from_user.id)
     active_glc = user.get('active_glc_statuses', '')
+    active_game = user.get('active_game_status', '')
     
-    glc_icons = []
+    # Формируем список активных GLC статусов (только иконки, без ⭐)
+    active_glc_icons = []
     for s in glc_statuses:
         if s['status_icon'] in active_glc:
-            glc_icons.append(f"⭐ {s['status_icon']}")
-        else:
-            glc_icons.append(f"⬜ {s['status_icon']}")
-    glc_text = " ; ".join(glc_icons) if glc_icons else "Нет статусов"
+            active_glc_icons.append(s['status_icon'])
+    glc_text = " ; ".join(active_glc_icons) if active_glc_icons else "Нет статусов"
     
-    active_game = user.get('active_game_status', '')
-    # Фильтруем только те статусы, которые есть у игрока
+    # Фильтруем активные топ-статусы (только те, которые есть у игрока)
     filtered_game_icons = []
     if game_status:
         for icon in active_game:
